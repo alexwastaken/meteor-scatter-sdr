@@ -1,0 +1,21 @@
+[radio]
+# Start in the FM broadcast band supported by the antenna.
+center_frequency_hz = 100000000
+
+# 1.024 MS/s spans about 1.024 MHz and writes about 2.05 MB/second.
+# It is a conservative starting point for a Raspberry Pi 4.
+sample_rate_hz = 1024000
+
+# Use "auto" for the first hardware check. A fixed gain is better for
+# comparing signal levels once we start detecting meteor echoes.
+gain_db = "auto"
+
+# The Nooelec TCXO is already stable; start at zero and calibrate later.
+ppm = 0
+
+# rtl_sdr device index or serial number.
+device = "0"
+
+[capture]
+duration_seconds = 10.0
+output_dir = "captures"

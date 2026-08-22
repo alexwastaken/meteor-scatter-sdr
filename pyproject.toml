@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meteor-scatter-sdr"
+version = "0.1.0"
+description = "A small RTL-SDR I/Q capture pipeline for Raspberry Pi meteor-scatter experiments"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Alex Parsons" }]
+dependencies = []
+
+[project.scripts]
+meteor-sdr = "meteor_sdr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
