@@ -2,6 +2,137 @@
   display: none;
 }
 
+.retry-button[hidden] {
+  display: none;
+}
+
+.tuning-deck {
+  display: grid;
+  grid-template-columns: 36px minmax(180px, 260px) 36px minmax(300px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 9px;
+  border: 1px solid #0b2035;
+  background: #000;
+}
+
+.tune-step {
+  height: 43px;
+  border: 1px solid #123d61;
+  border-radius: 2px;
+  background: #02070c;
+  color: #69cfff;
+  cursor: pointer;
+  font: 500 18px/1 monospace;
+}
+
+.tune-step:hover,
+.tune-step:focus-visible,
+.span-control button:hover,
+.span-control button:focus-visible {
+  border-color: #009dff;
+  color: #d8efff;
+  outline: none;
+  box-shadow: inset 0 0 14px #008cff24;
+}
+
+.frequency-dial > span:first-child,
+.span-control > span:first-child {
+  display: block;
+  margin-bottom: 6px;
+  color: #55758e;
+  font: 8px/1 monospace;
+  letter-spacing: .12em;
+}
+
+.dial-input {
+  position: relative;
+  display: block;
+}
+
+.dial-input input {
+  height: 43px;
+  margin: 0;
+  padding-right: 48px;
+  color: #a9ddff;
+  font-size: 16px;
+  text-align: center;
+}
+
+.dial-input i {
+  position: absolute;
+  top: 17px;
+  right: 10px;
+  color: #29485f;
+  font: normal 8px monospace;
+}
+
+.span-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(74px, 1fr));
+}
+
+.span-control > span:first-child {
+  grid-column: 1 / -1;
+}
+
+.span-control button {
+  height: 43px;
+  border: 1px solid #0d2b43;
+  border-right-width: 0;
+  background: #000;
+  color: #496e87;
+  cursor: pointer;
+  font: 8px monospace;
+  letter-spacing: .05em;
+}
+
+.span-control button:last-child {
+  border-right-width: 1px;
+}
+
+.span-control button.active {
+  border-color: #087abc;
+  background: #00101b;
+  color: #75d1ff;
+  box-shadow: inset 0 0 16px #008cff1f;
+}
+
+.receiver .control-footer {
+  margin: 0 1px 18px;
+}
+
+.retry-button {
+  height: 43px;
+  align-self: end;
+}
+
+@media (max-width: 900px) {
+  .tuning-deck {
+    grid-template-columns: 36px minmax(170px, 1fr) 36px;
+  }
+
+  .span-control {
+    grid-column: 1 / -1;
+  }
+
+  .retry-button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .tuning-deck {
+    padding: 9px;
+  }
+
+  .span-control button {
+    padding: 0 5px;
+    font-size: 7px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .meter i {
     transition: none;

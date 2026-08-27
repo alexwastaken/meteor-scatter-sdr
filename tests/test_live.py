@@ -86,11 +86,11 @@ class LivePipelineTests(unittest.TestCase):
             finally:
                 monitor.close()
 
-    def test_waterfall_preview_is_a_512_pixel_png(self) -> None:
+    def test_waterfall_preview_is_a_256_pixel_png(self) -> None:
         data = bytes([127, 128]) * 8192
         preview = render_waterfall_png(data, height=24)
         self.assertEqual(preview[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(int.from_bytes(preview[16:20], "big"), 512)
+        self.assertEqual(int.from_bytes(preview[16:20], "big"), 256)
         self.assertEqual(int.from_bytes(preview[20:24], "big"), 24)
 
     def test_monitor_publishes_a_frame_from_streamed_iq(self) -> None:
@@ -112,7 +112,7 @@ class LivePipelineTests(unittest.TestCase):
                 frame = monitor.wait_for_frame(0, timeout=2)
                 self.assertIsNotNone(frame)
                 assert frame is not None
-                self.assertEqual(len(frame["spectrum_db"]), 512)
+                self.assertEqual(len(frame["spectrum_db"]), 256)
                 self.assertGreater(frame["buffer_seconds"], 0)
             finally:
                 monitor.close()
@@ -153,6 +153,8 @@ class LivePipelineTests(unittest.TestCase):
                     (second["lower_edge_hz"] + second["upper_edge_hz"]) // 2,
                     100_100_000,
                 )
+                status = monitor.watch({"detection_frequency_hz": 100_110_000})
+                self.assertEqual(status["settings"]["detection_frequency_hz"], 100_110_000)
             finally:
                 monitor.close()
 

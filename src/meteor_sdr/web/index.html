@@ -19,25 +19,12 @@
 
       <main>
         <section class="mission-header">
-          <div><p class="kicker">FORWARD-SCATTER RECEIVER</p><h1>Night-sky radio console</h1><p>Live RF telemetry from your Yagi and RTL-SDR. Drag either display to move through the band; scroll over it to change the visible span.</p></div>
+          <div><p class="kicker">FORWARD-SCATTER RECEIVER</p><h1>Night-sky radio console</h1><p>The receiver begins streaming automatically. Work directly inside the wideband display: scroll to tune, drag to pan, and click to place the meteor watch line.</p></div>
           <div class="mission-stats">
             <div><span>ROLLING BUFFER</span><strong id="buffer-value">0.0 s</strong><div class="meter"><i id="buffer-meter"></i></div></div>
             <div><span>CENTER</span><strong id="header-center">100.000</strong><small>MHz</small></div>
             <div><span>FRAME RATE</span><strong id="frame-rate">0.0</strong><small>FPS</small></div>
           </div>
-        </section>
-
-        <section class="control-panel panel">
-          <form id="monitor-form">
-            <label>Center frequency<div class="input-unit"><input id="center-frequency" type="number" min="88" max="107.5" step="0.001" value="100.000" required><span>MHz</span></div></label>
-            <label>Visible span<select id="sample-rate"><option value="250000">0.250 MHz</option><option value="1024000" selected>1.024 MHz</option><option value="2048000">2.048 MHz</option></select></label>
-            <label>Receiver gain<select id="gain"><option value="auto" selected>Automatic</option><option value="14.4">14.4 dB</option><option value="28.0">28.0 dB</option><option value="40.2">40.2 dB</option></select></label>
-            <label>Watch frequency<div class="input-unit"><input id="detection-frequency" type="number" min="87.5" max="108" step="0.001" value="100.000" required><span>MHz</span></div></label>
-            <label>Trigger rise<select id="threshold"><option value="6">6 dB · sensitive</option><option value="8" selected>8 dB · normal</option><option value="12">12 dB · strict</option></select></label>
-            <div class="actions"><button class="primary" id="start-button" type="submit"><i></i>Start receiver</button><button class="secondary" id="stop-button" type="button" disabled>Stop</button></div>
-          </form>
-          <div class="control-footer"><span id="span-note">WINDOW 99.488—100.512 MHz</span><span>DRAG ◀ ▶ TO TUNE &nbsp;·&nbsp; SCROLL TO CHANGE SPAN</span></div>
-          <div class="message" id="message" hidden role="status"></div>
         </section>
 
         <section class="receiver panel" aria-label="Interactive SDR display">
@@ -49,6 +36,25 @@
               <div><span>MEMORY</span><strong id="memory-state">EMPTY</strong></div>
             </div>
           </div>
+
+          <div class="tuning-deck" aria-label="Receiver tuning controls">
+            <button class="tune-step" id="tune-down" type="button" aria-label="Tune lower">−</button>
+            <label class="frequency-dial"><span>CENTER FREQUENCY</span><span class="dial-input"><input id="center-frequency" type="number" min="88" max="107.5" step="0.001" value="100.000" aria-label="Center frequency in megahertz"><i>MHz</i></span></label>
+            <button class="tune-step" id="tune-up" type="button" aria-label="Tune higher">+</button>
+            <div class="span-control" aria-label="Visible bandwidth">
+              <span>SPAN</span>
+              <button type="button" data-span="250000">250 kHz</button>
+              <button class="active" type="button" data-span="1024000">1.024 MHz</button>
+              <button type="button" data-span="2048000">2.048 MHz</button>
+            </div>
+            <button class="secondary compact retry-button" id="retry-button" type="button" hidden>Retry receiver</button>
+            <input id="sample-rate" type="hidden" value="1024000">
+            <input id="gain" type="hidden" value="auto">
+            <input id="detection-frequency" type="hidden" value="100.000">
+            <input id="threshold" type="hidden" value="8">
+          </div>
+          <div class="control-footer"><span id="span-note">WINDOW 99.488—100.512 MHz</span><span>SCROLL = TUNE &nbsp;·&nbsp; DRAG = PAN &nbsp;·&nbsp; CLICK = WATCH</span></div>
+          <div class="message" id="message" hidden role="status"></div>
 
           <div class="plot-label"><span>SPECTRUM / dBFS</span><span id="cursor-readout">MOVE CURSOR OVER DISPLAY</span></div>
           <div class="plot-wrap spectrum-wrap interactive-plot" data-plot="spectrum">
@@ -65,7 +71,7 @@
             <div class="crosshair" id="waterfall-crosshair"></div>
             <div class="retune-overlay" id="retune-overlay" hidden><span>RETUNING</span><strong id="retune-frequency">100.000 MHz</strong></div>
           </div>
-          <div class="receiver-foot"><span>CLICK + DRAG TO PAN FREQUENCY</span><span>THE 30-SECOND BUFFER RESTARTS AFTER RETUNING</span></div>
+          <div class="receiver-foot"><span>SCROLL THROUGH THE BAND · CLICK A SIGNAL TO WATCH IT</span><span>THE 30-SECOND BUFFER RESTARTS AFTER RETUNING</span></div>
         </section>
 
         <section class="lower-grid">

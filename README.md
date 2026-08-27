@@ -7,9 +7,9 @@ samples stay on the Pi.
 ## What this version does
 
 - streams unsigned 8-bit I/Q continuously from the native `rtl_sdr` utility
-- shows a 512-bin live spectrum and scrolling waterfall in a local web page
-- updates the display at up to 15 frames per second with smoothed rendering
-- lets you drag the spectrum or waterfall to retune and scroll to change span
+- starts a lightweight 256-bin live spectrum and waterfall automatically
+- animates the trace smoothly while limiting Raspberry Pi and browser workload
+- lets you scroll to tune, drag to pan, and click a signal to move the watch line
 - holds exactly the newest 30 seconds of raw I/Q in RAM
 - automatically overwrites older non-event samples instead of filling the disk
 - archives the preceding 30 seconds as `.cu8`, JSON, and a waterfall PNG when
@@ -93,15 +93,17 @@ meteor-sdr serve --host 0.0.0.0 --no-browser
 Then open `http://raspberrypi.local:8787` on the Mac. There is no sign-in screen,
 so do not expose this port to the public internet.
 
-Choose a center frequency, a displayed span, gain, an exact frequency to watch,
-and the trigger rise. Press **Start monitoring**. The detector first learns a
-short baseline; saving is enabled after both the baseline and 30-second buffer
-are ready.
+The receiver starts automatically with `meteor-sdr serve`. The detector first
+learns a short baseline; saving is enabled after both the baseline and
+30-second buffer are ready.
 
-Once it is running, drag left or right anywhere on the spectrum or waterfall to
-move through the FM band. Scroll over either display to switch between the
-0.250, 1.024, and 2.048 MHz spans. Retuning deliberately clears and refills the
-30-second memory so samples from different frequency windows are never mixed.
+All normal tuning happens inside the wideband receiver. Scroll over the spectrum
+or waterfall to move higher or lower, drag left or right to pan, click a signal
+to place the meteor watch line, or type an exact center frequency into the
+receiver dial. The span buttons switch between 0.250, 1.024, and 2.048 MHz.
+Retuning deliberately clears and refills the 30-second memory so samples from
+different frequency windows are never mixed; moving only the watch line does
+not clear it.
 
 At the recommended 1.024 MS/s setting, the RAM ring is about 61.4 MB and each
 saved candidate is about 61.4 MB. Candidate files are stored under:

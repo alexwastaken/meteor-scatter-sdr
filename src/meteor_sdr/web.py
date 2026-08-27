@@ -85,15 +85,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path not in {"/api/live/start", "/api/live/stop", "/api/live/tune"}:
+        if path not in {"/api/live/start", "/api/live/stop", "/api/live/tune", "/api/live/watch"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         try:
-            payload = self._payload() if path in {"/api/live/start", "/api/live/tune"} else {}
+            payload = self._payload() if path != "/api/live/stop" else {}
             if path == "/api/live/start":
                 status = self.server.monitor.start(payload)
             elif path == "/api/live/tune":
                 status = self.server.monitor.tune(payload)
+            elif path == "/api/live/watch":
+                status = self.server.monitor.watch(payload)
             else:
                 status = self.server.monitor.stop()
         except RtlSdrError as exc:
@@ -157,6 +159,7 @@ def serve_dashboard(
 ) -> None:
     monitor = LiveMonitor(config)
     server = DashboardServer((host, port), monitor)
+    monitor.start({})
     actual_port = server.server_address[1]
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{browser_host}:{actual_port}"

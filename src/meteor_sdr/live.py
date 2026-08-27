@@ -23,9 +23,9 @@ from .rtl import RtlSdr, RtlSdrError
 
 BUFFER_SECONDS = 30.0
 FFT_SIZE = 4096
-DISPLAY_BINS = 512
+DISPLAY_BINS = 256
 READ_BYTES = 65_536
-MAX_FRAME_RATE_HZ = 15.0
+MAX_FRAME_RATE_HZ = 12.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +217,7 @@ class LiveMonitor:
         self._thread: Thread | None = None
         self._process: subprocess.Popen[bytes] | None = None
         self._settings: LiveSettings | None = None
+        self._settings_revision = 0
         self._state = "stopped"
         self._error: str | None = None
         self._sequence = 0
@@ -232,6 +233,7 @@ class LiveMonitor:
             if self._state in {"starting", "running"}:
                 raise RtlSdrError("live monitoring is already running")
             self._settings = settings
+            self._settings_revision += 1
             self._state = "starting"
             self._error = None
             self._frame = None
@@ -266,6 +268,22 @@ class LiveMonitor:
             raise RtlSdrError("start monitoring before using live tuning")
         self.stop()
         return self.start(payload)
+
+    def watch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if set(payload) != {"detection_frequency_hz"}:
+            raise ConfigurationError("watch update requires detection_frequency_hz")
+        frequency = payload["detection_frequency_hz"]
+        if isinstance(frequency, bool) or not isinstance(frequency, int):
+            raise ConfigurationError("detection_frequency_hz must be an integer")
+        with self._condition:
+            if self._state not in {"starting", "running"} or self._settings is None:
+                raise RtlSdrError("receiver is not running")
+            config = self._settings.config
+            if not config.lower_edge_hz <= frequency <= config.upper_edge_hz:
+                raise ConfigurationError("watch frequency must be inside the displayed span")
+            self._settings = replace(self._settings, detection_frequency_hz=frequency)
+            self._settings_revision += 1
+            return self.status_locked()
 
     def close(self) -> None:
         self.stop()
@@ -342,6 +360,7 @@ class LiveMonitor:
     def _run(self) -> None:
         assert self._settings is not None
         settings = self._settings
+        settings_revision = self._settings_revision
         config = settings.config
         analyzer = SpectrumAnalyzer()
         detector = CandidateDetector(settings.threshold_db)
@@ -380,6 +399,12 @@ class LiveMonitor:
                 if frame_time - last_frame_time < 1 / MAX_FRAME_RATE_HZ:
                     continue
                 last_frame_time = frame_time
+                with self._condition:
+                    if self._settings_revision != settings_revision:
+                        assert self._settings is not None
+                        settings = self._settings
+                        settings_revision = self._settings_revision
+                        detector = CandidateDetector(settings.threshold_db)
                 spectrum = analyzer.analyze(block)
                 bin_width = config.sample_rate_hz / analyzer.display_bins
                 target_index = round(
@@ -459,10 +484,13 @@ class LiveMonitor:
     def _drain_stderr(process: subprocess.Popen[bytes], parts: list[bytes]) -> None:
         if process.stderr is None:
             return
-        while data := process.stderr.read(4096):
-            parts.append(data)
-            if sum(map(len, parts)) > 32_768:
-                del parts[:-4]
+        try:
+            while data := process.stderr.read(4096):
+                parts.append(data)
+                if sum(map(len, parts)) > 32_768:
+                    del parts[:-4]
+        except (OSError, ValueError):
+            return
 
     def _archive(
         self,
