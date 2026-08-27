@@ -13,6 +13,7 @@ from meteor_sdr.live import (
     LiveSettings,
     RollingIqBuffer,
     SpectrumAnalyzer,
+    render_waterfall_png,
     settings_from_payload,
 )
 from meteor_sdr.rtl import RtlSdr
@@ -70,7 +71,7 @@ class LivePipelineTests(unittest.TestCase):
             )
             monitor = LiveMonitor(config)
             settings = LiveSettings(config, 100_000_000, 8).validated()
-            data = bytes([127, 128]) * 100
+            data = bytes([127, 128]) * 4096
             try:
                 monitor._archive(data, settings, -35.0, 10.0)
                 metadata_files = list((config.output_dir / "events").glob("*.cu8.json"))
@@ -80,8 +81,17 @@ class LivePipelineTests(unittest.TestCase):
                 self.assertEqual(data_path.read_bytes(), data)
                 self.assertEqual(metadata["classification"], "meteor_candidate_unconfirmed")
                 self.assertEqual(metadata["trigger_excess_db"], 10.0)
+                preview_path = metadata_files[0].parent / metadata["preview_file"]
+                self.assertTrue(preview_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
             finally:
                 monitor.close()
+
+    def test_waterfall_preview_is_a_512_pixel_png(self) -> None:
+        data = bytes([127, 128]) * 8192
+        preview = render_waterfall_png(data, height=24)
+        self.assertEqual(preview[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(int.from_bytes(preview[16:20], "big"), 512)
+        self.assertEqual(int.from_bytes(preview[20:24], "big"), 24)
 
     def test_monitor_publishes_a_frame_from_streamed_iq(self) -> None:
         with TemporaryDirectory() as temporary_directory:
@@ -104,6 +114,45 @@ class LivePipelineTests(unittest.TestCase):
                 assert frame is not None
                 self.assertEqual(len(frame["spectrum_db"]), 512)
                 self.assertGreater(frame["buffer_seconds"], 0)
+            finally:
+                monitor.close()
+
+    def test_live_tuning_restarts_stream_at_new_center(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            executable = Path(temporary_directory) / "fake_continuous_rtl_sdr"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys, time\n"
+                "while True:\n"
+                "    sys.stdout.buffer.write(bytes([127, 128]) * 32768)\n"
+                "    sys.stdout.buffer.flush()\n"
+                "    time.sleep(0.01)\n",
+                encoding="utf-8",
+            )
+            os.chmod(executable, 0o755)
+            monitor = LiveMonitor(
+                CaptureConfig(sample_rate_hz=250_000),
+                rtl=RtlSdr(str(executable)),
+            )
+            try:
+                monitor.start({})
+                first = monitor.wait_for_frame(0, timeout=2)
+                self.assertIsNotNone(first)
+                assert first is not None
+                monitor.tune(
+                    {
+                        "center_frequency_hz": 100_100_000,
+                        "detection_frequency_hz": 100_100_000,
+                        "sample_rate_hz": 250_000,
+                    }
+                )
+                second = monitor.wait_for_frame(first["sequence"], timeout=2)
+                self.assertIsNotNone(second)
+                assert second is not None
+                self.assertEqual(
+                    (second["lower_edge_hz"] + second["upper_edge_hz"]) // 2,
+                    100_100_000,
+                )
             finally:
                 monitor.close()
 

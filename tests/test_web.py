@@ -34,7 +34,7 @@ class DashboardHttpTests(unittest.TestCase):
         response = self.connection.getresponse()
         body = response.read().decode()
         self.assertEqual(response.status, 200)
-        self.assertIn("Live spectrum", body)
+        self.assertIn("Wideband receiver", body)
         self.assertNotIn("Download ZIP", body)
 
     def test_old_download_api_is_gone(self) -> None:

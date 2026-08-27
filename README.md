@@ -8,10 +8,12 @@ samples stay on the Pi.
 
 - streams unsigned 8-bit I/Q continuously from the native `rtl_sdr` utility
 - shows a 512-bin live spectrum and scrolling waterfall in a local web page
+- updates the display at up to 15 frames per second with smoothed rendering
+- lets you drag the spectrum or waterfall to retune and scroll to change span
 - holds exactly the newest 30 seconds of raw I/Q in RAM
 - automatically overwrites older non-event samples instead of filling the disk
-- archives the preceding 30 seconds as `.cu8` plus JSON when an adaptive
-  narrowband level detector flags a candidate
+- archives the preceding 30 seconds as `.cu8`, JSON, and a waterfall PNG when
+  an adaptive narrowband level detector flags a candidate
 
 An automatic save is **not proof of a meteor**. Local interference, aircraft,
 tropospheric propagation, and transmitter changes can all produce candidates.
@@ -96,6 +98,11 @@ and the trigger rise. Press **Start monitoring**. The detector first learns a
 short baseline; saving is enabled after both the baseline and 30-second buffer
 are ready.
 
+Once it is running, drag left or right anywhere on the spectrum or waterfall to
+move through the FM band. Scroll over either display to switch between the
+0.250, 1.024, and 2.048 MHz spans. Retuning deliberately clears and refills the
+30-second memory so samples from different frequency windows are never mixed.
+
 At the recommended 1.024 MS/s setting, the RAM ring is about 61.4 MB and each
 saved candidate is about 61.4 MB. Candidate files are stored under:
 
@@ -103,6 +110,7 @@ saved candidate is about 61.4 MB. Candidate files are stored under:
 captures/events/
   meteor_candidate_....cu8
   meteor_candidate_....cu8.json
+  meteor_candidate_....waterfall.png
 ```
 
 Stopping monitoring discards the current unsaved ring. Archived candidates are
@@ -135,9 +143,9 @@ the newest row is at the top and older rows move downward.
   line, regularly repeating pattern, or activity across many frequencies is
   also less likely to be a meteor.
 
-Use the saved JSON to see why the detector fired, then inspect the matching
-30-second `.cu8` file. The data includes the entire displayed span, not just the
-watched bin.
+Use the saved PNG for a quick visual review and the JSON to see why the detector
+fired. The matching 30-second `.cu8` file remains the full-fidelity source. It
+contains the entire displayed span, not just the watched bin.
 
 ## Raw capture compatibility
 

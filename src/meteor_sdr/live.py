@@ -10,8 +10,10 @@ from typing import Any
 import hashlib
 import json
 import math
+import struct
 import subprocess
 import time
+import zlib
 
 import numpy as np
 
@@ -22,7 +24,8 @@ from .rtl import RtlSdr, RtlSdrError
 BUFFER_SECONDS = 30.0
 FFT_SIZE = 4096
 DISPLAY_BINS = 512
-READ_BYTES = 262_144
+READ_BYTES = 65_536
+MAX_FRAME_RATE_HZ = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +95,49 @@ class SpectrumAnalyzer:
         power = 20 * np.log10(np.maximum(np.abs(fft) / self.window_scale, 1e-8))
         grouped = power.reshape(self.display_bins, -1).max(axis=1)
         return grouped.astype(np.float32)
+
+
+def render_waterfall_png(
+    iq_bytes: bytes,
+    analyzer: SpectrumAnalyzer | None = None,
+    height: int = 240,
+) -> bytes:
+    """Render a compact, newest-first waterfall preview without extra packages."""
+    analyzer = analyzer or SpectrumAnalyzer()
+    needed = analyzer.fft_size * 2
+    if len(iq_bytes) < needed:
+        raise ValueError(f"at least {needed} I/Q bytes are required")
+    maximum_start = len(iq_bytes) - needed
+    starts = np.linspace(0, maximum_start, height, dtype=np.int64)
+    rows = np.empty((height, analyzer.display_bins), dtype=np.float32)
+    for index, start in enumerate(starts):
+        rows[height - index - 1] = analyzer.analyze(
+            iq_bytes[int(start) : int(start) + needed]
+        )
+
+    level = np.clip((rows + 90.0) / 70.0, 0.0, 1.0)
+    stops = np.array(
+        [[0, 0, 0], [0, 12, 40], [0, 72, 210], [0, 181, 255], [220, 248, 255]],
+        dtype=np.float32,
+    )
+    scaled = level * (len(stops) - 1)
+    lower = np.minimum(len(stops) - 2, scaled.astype(np.int16))
+    mix = (scaled - lower)[..., None]
+    rgb = (stops[lower] * (1 - mix) + stops[lower + 1] * mix).astype(np.uint8)
+    raw = b"".join(b"\x00" + row.tobytes() for row in rgb)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", analyzer.display_bins, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(
+        b"IDAT", zlib.compress(raw, level=6)
+    ) + chunk(b"IEND", b"")
 
 
 class CandidateDetector:
@@ -211,6 +257,16 @@ class LiveMonitor:
             self._condition.notify_all()
             return self.status_locked()
 
+    def tune(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Retune by restarting rtl_sdr; samples from different spans never mix."""
+        settings_from_payload(self.base_config, payload)
+        with self._condition:
+            was_live = self._state in {"starting", "running"}
+        if not was_live:
+            raise RtlSdrError("start monitoring before using live tuning")
+        self.stop()
+        return self.start(payload)
+
     def close(self) -> None:
         self.stop()
         self._writer.shutdown(wait=True, cancel_futures=False)
@@ -246,7 +302,7 @@ class LiveMonitor:
     def wait_for_frame(self, after_sequence: int, timeout: float = 10.0) -> dict[str, Any] | None:
         with self._condition:
             self._condition.wait_for(
-                lambda: self._sequence > after_sequence or self._state in {"stopped", "error"},
+                lambda: self._sequence > after_sequence,
                 timeout=timeout,
             )
             if self._sequence > after_sequence and self._frame is not None:
@@ -264,6 +320,9 @@ class LiveMonitor:
                 data_path = event_dir / item["data_file"]
                 if data_path.is_file():
                     item["byte_count"] = data_path.stat().st_size
+                    preview_name = item.get("preview_file")
+                    if isinstance(preview_name, str) and (event_dir / preview_name).is_file():
+                        item["preview_url"] = f"/api/events/previews/{preview_name}"
                     result.append(item)
             except (OSError, ValueError, KeyError, TypeError):
                 continue
@@ -272,6 +331,13 @@ class LiveMonitor:
 
     def _event_dir(self) -> Path:
         return self.base_config.output_dir.expanduser() / "events"
+
+    def preview_path(self, name: str) -> Path | None:
+        if Path(name).name != name or not name.endswith(".waterfall.png"):
+            return None
+        path = (self._event_dir() / name).resolve()
+        event_dir = self._event_dir().resolve()
+        return path if path.parent == event_dir and path.is_file() else None
 
     def _run(self) -> None:
         assert self._settings is not None
@@ -302,6 +368,7 @@ class LiveMonitor:
                 self._state = "running"
                 self._condition.notify_all()
             assert process.stdout is not None
+            last_frame_time = 0.0
             while not self._stop.is_set():
                 block = process.stdout.read(READ_BYTES)
                 if not block:
@@ -309,6 +376,10 @@ class LiveMonitor:
                 ring.append(block)
                 if len(block) < FFT_SIZE * 2:
                     continue
+                frame_time = time.monotonic()
+                if frame_time - last_frame_time < 1 / MAX_FRAME_RATE_HZ:
+                    continue
+                last_frame_time = frame_time
                 spectrum = analyzer.analyze(block)
                 bin_width = config.sample_rate_hz / analyzer.display_bins
                 target_index = round(
@@ -406,12 +477,15 @@ class LiveMonitor:
         stem = f"meteor_candidate_{now.strftime('%Y%m%dT%H%M%S_%fZ')}_{settings.detection_frequency_hz}Hz"
         data_path = event_dir / f"{stem}.cu8"
         metadata_path = event_dir / f"{stem}.cu8.json"
+        preview_path = event_dir / f"{stem}.waterfall.png"
         temporary_path = event_dir / f".{stem}.part"
         temporary_path.write_bytes(data)
         temporary_path.replace(data_path)
+        preview_path.write_bytes(render_waterfall_png(data))
         metadata = {
             "classification": "meteor_candidate_unconfirmed",
             "data_file": data_path.name,
+            "preview_file": preview_path.name,
             "triggered_at_utc": now.isoformat(),
             "buffer_duration_seconds": len(data) / (settings.config.sample_rate_hz * 2),
             "center_frequency_hz": settings.config.center_frequency_hz,
