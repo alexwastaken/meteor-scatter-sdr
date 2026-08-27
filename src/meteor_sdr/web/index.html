@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#08111f">
+    <title>Meteor SDR Receiver</title>
+    <link rel="stylesheet" href="/app.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Meteor SDR home">
+          <span class="brand-mark" aria-hidden="true"><span></span></span>
+          <span>
+            <strong>Meteor SDR</strong>
+            <small>RF capture station</small>
+          </span>
+        </a>
+        <div class="connection-pill" id="connection-pill">
+          <span class="status-dot"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="page-title">
+          <div class="hero-copy">
+            <p class="eyebrow">Carmel Valley receiving station</p>
+            <h1 id="page-title">Turn the sky into data.</h1>
+            <p class="hero-description">
+              Record a clean slice of the FM band from your Yagi and RTL-SDR.
+              Every collection stays on this Raspberry Pi until you download it.
+            </p>
+          </div>
+          <div class="signal-field" aria-hidden="true">
+            <div class="orbit orbit-one"></div>
+            <div class="orbit orbit-two"></div>
+            <div class="orbit orbit-three"></div>
+            <div class="signal-core"></div>
+            <div class="meteor-streak"></div>
+          </div>
+        </section>
+
+        <section class="workspace-grid">
+          <article class="panel capture-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-label">New collection</p>
+                <h2>Capture radio data</h2>
+              </div>
+              <span class="local-badge">Local only</span>
+            </div>
+
+            <form id="capture-form">
+              <div class="frequency-control">
+                <label for="frequency">Center frequency</label>
+                <div class="frequency-input">
+                  <input id="frequency" name="frequency" type="number" min="88" max="107.5" step="0.1" value="100.0" required>
+                  <span>MHz</span>
+                </div>
+                <p class="field-note" id="frequency-span">Listening across approximately 99.488–100.512 MHz</p>
+              </div>
+
+              <div class="control-row">
+                <div class="field-group">
+                  <label for="sample-rate">Signal span</label>
+                  <select id="sample-rate" name="sample-rate">
+                    <option value="250000">0.25 MHz · compact</option>
+                    <option value="1024000" selected>1.024 MHz · recommended</option>
+                    <option value="2048000">2.048 MHz · wide</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <label for="duration">Duration</label>
+                  <select id="duration" name="duration">
+                    <option value="5">5 seconds</option>
+                    <option value="10" selected>10 seconds</option>
+                    <option value="30">30 seconds</option>
+                    <option value="60">1 minute</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <div class="field-group">
+                  <label for="gain">Receiver gain</label>
+                  <select id="gain" name="gain">
+                    <option value="auto" selected>Automatic</option>
+                    <option value="14.4">14.4 dB · low</option>
+                    <option value="28.0">28.0 dB · medium</option>
+                    <option value="40.2">40.2 dB · high</option>
+                  </select>
+                </div>
+                <div class="estimate-card" aria-live="polite">
+                  <span>Estimated file</span>
+                  <strong id="size-estimate">20.5 MB</strong>
+                </div>
+              </div>
+
+              <label class="checkbox-row" for="auto-download">
+                <input id="auto-download" type="checkbox" checked>
+                <span>
+                  <strong>Download when complete</strong>
+                  <small>Packages raw I/Q and metadata into one ZIP.</small>
+                </span>
+              </label>
+
+              <button class="primary-button" id="start-button" type="submit">
+                <span class="button-icon" aria-hidden="true"></span>
+                <span id="start-button-label">Start collection</span>
+              </button>
+            </form>
+
+            <div class="capture-progress" id="capture-progress" hidden aria-live="polite">
+              <div class="progress-header">
+                <div>
+                  <span class="recording-label"><i></i> Recording RF</span>
+                  <strong id="progress-detail">0 of 10 seconds</strong>
+                </div>
+                <span id="progress-percent">0%</span>
+              </div>
+              <div class="progress-track"><span id="progress-bar"></span></div>
+            </div>
+
+            <div class="message" id="message" hidden role="status"></div>
+          </article>
+
+          <aside class="panel understanding-panel">
+            <p class="section-label">What gets recorded</p>
+            <h2>A precise RF snapshot</h2>
+            <div class="data-flow" aria-label="Capture data flow">
+              <div class="flow-step">
+                <span class="flow-number">01</span>
+                <div><strong>Yagi antenna</strong><small>Focuses FM-band energy</small></div>
+              </div>
+              <div class="flow-line"></div>
+              <div class="flow-step">
+                <span class="flow-number">02</span>
+                <div><strong>RTL-SDR</strong><small>Samples I and Q values</small></div>
+              </div>
+              <div class="flow-line"></div>
+              <div class="flow-step">
+                <span class="flow-number">03</span>
+                <div><strong>Capture bundle</strong><small>Raw .cu8 plus JSON context</small></div>
+              </div>
+            </div>
+            <div class="format-note">
+              <span class="format-mark">IQ</span>
+              <p><strong>Nothing is discarded.</strong> The raw capture can later become a spectrum, waterfall, audio, or meteor-event detector.</p>
+            </div>
+          </aside>
+        </section>
+
+        <section class="panel library-panel" aria-labelledby="library-title">
+          <div class="panel-heading library-heading">
+            <div>
+              <p class="section-label">Capture library</p>
+              <h2 id="library-title">Saved on this Pi</h2>
+            </div>
+            <button class="secondary-button" id="refresh-button" type="button">Refresh</button>
+          </div>
+          <div class="capture-list" id="capture-list">
+            <div class="empty-state">
+              <span class="empty-icon" aria-hidden="true"></span>
+              <strong>No captures yet</strong>
+              <p>Your first RF collection will appear here.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <span>Meteor SDR · Raspberry Pi receiver</span>
+        <span>Files never leave this device unless you download them.</span>
+      </footer>
+    </div>
+  </body>
+</html>

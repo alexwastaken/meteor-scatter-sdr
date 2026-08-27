@@ -48,6 +48,21 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--duration", type=float, help="capture duration in seconds")
     capture.add_argument("--output-dir", type=Path, help="capture directory")
     capture.set_defaults(handler=_capture)
+
+    serve = commands.add_parser("serve", help="open the local capture dashboard")
+    serve.add_argument("--config", type=Path, help="TOML configuration file")
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="address to listen on (default: 127.0.0.1)",
+    )
+    serve.add_argument("--port", type=int, default=8787, help="port (default: 8787)")
+    serve.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="do not open the dashboard in the Pi's browser",
+    )
+    serve.set_defaults(handler=_serve)
     return parser
 
 
@@ -110,6 +125,21 @@ def _capture(args: argparse.Namespace) -> int:
     print(f"data:     {result.data_path}")
     print(f"metadata: {result.metadata_path}")
     print(f"sha256:   {result.sha256}")
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    from .web import serve_dashboard
+
+    if not 0 <= args.port <= 65_535:
+        raise ConfigurationError("port must be between 0 and 65535")
+    config = load_config(args.config)
+    serve_dashboard(
+        config=config,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
     return 0
 
 

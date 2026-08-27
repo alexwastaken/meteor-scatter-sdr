@@ -90,6 +90,30 @@ cp config.example.toml config.toml
 meteor-sdr capture --config config.toml
 ```
 
+## Use the local dashboard
+
+Start the browser interface on the Raspberry Pi:
+
+```bash
+meteor-sdr serve
+```
+
+The command opens `http://127.0.0.1:8787` in the Pi's browser. From the
+dashboard you can choose the frequency, span, duration, and gain; start one
+capture; follow its progress; and download the raw `.cu8` data and JSON metadata
+together as a ZIP file. The ZIP is assembled only when requested, so it does not
+permanently double the storage used by each capture.
+
+To open the dashboard from another computer on the same trusted network, run:
+
+```bash
+meteor-sdr serve --host 0.0.0.0 --no-browser
+```
+
+Then visit `http://raspberrypi.local:8787` from that computer. This first local
+version has no sign-in screen, so do not expose the port to the public internet.
+Press `Ctrl+C` in the Pi terminal to stop the dashboard.
+
 The antenna and current validation constrain captures to the 87.5-108 MHz FM
 band. We will select a quiet local frequency and a distant transmitter before
 adding meteor-event detection.

@@ -17,3 +17,6 @@ meteor-sdr = "meteor_sdr.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+meteor_sdr = ["web/*.html", "web/*.css", "web/*.js"]
