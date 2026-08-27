@@ -37,6 +37,12 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("Wideband receiver", body)
         self.assertNotIn("Download ZIP", body)
 
+        self.connection.request("GET", "/display.css")
+        response = self.connection.getresponse()
+        stylesheet = response.read().decode()
+        self.assertEqual(response.status, 200)
+        self.assertIn(".retune-overlay[hidden]", stylesheet)
+
     def test_old_download_api_is_gone(self) -> None:
         self.connection.request("GET", "/api/captures")
         response = self.connection.getresponse()

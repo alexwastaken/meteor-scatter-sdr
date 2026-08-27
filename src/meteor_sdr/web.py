@@ -61,6 +61,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         static_files = {
             "/": ("index.html", "text/html; charset=utf-8"),
             "/app.css": ("app.css", "text/css; charset=utf-8"),
+            "/display.css": ("display.css", "text/css; charset=utf-8"),
             "/app.js": ("app.js", "text/javascript; charset=utf-8"),
         }
         asset = static_files.get(path)

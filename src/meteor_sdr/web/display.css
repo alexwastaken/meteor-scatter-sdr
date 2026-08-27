@@ -1,0 +1,9 @@
+.retune-overlay[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meter i {
+    transition: none;
+  }
+}
