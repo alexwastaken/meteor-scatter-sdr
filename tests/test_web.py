@@ -1,87 +1,47 @@
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from http.client import HTTPConnection
+from threading import Thread
 import json
-import time
 import unittest
-import zipfile
 
-from meteor_sdr.capture import CaptureResult
-from meteor_sdr.config import CaptureConfig, ConfigurationError
-from meteor_sdr.web import CaptureBusyError, CaptureManager, build_capture_zip
+from meteor_sdr.config import CaptureConfig
+from meteor_sdr.live import LiveMonitor
+from meteor_sdr.web import DashboardServer
 
 
-class WebDashboardTests(unittest.TestCase):
-    def test_manager_captures_and_bundles_files(self) -> None:
-        with TemporaryDirectory() as temporary_directory:
-            output_dir = Path(temporary_directory) / "captures"
-            config = CaptureConfig(
-                center_frequency_hz=100_000_000,
-                sample_rate_hz=250_000,
-                duration_seconds=0.001,
-                output_dir=output_dir,
-            )
+class DashboardHttpTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.monitor = LiveMonitor(CaptureConfig())
+        self.server = DashboardServer(("127.0.0.1", 0), self.monitor)
+        self.thread = Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
 
-            def fake_capture(submitted: CaptureConfig) -> CaptureResult:
-                submitted.output_dir.mkdir(parents=True, exist_ok=True)
-                data_path = submitted.output_dir / "test_capture.cu8"
-                metadata_path = submitted.output_dir / "test_capture.cu8.json"
-                data_path.write_bytes(bytes([127, 128]) * submitted.sample_count)
-                metadata_path.write_text(
-                    json.dumps(
-                        {
-                            "data_file": data_path.name,
-                            "center_frequency_hz": submitted.center_frequency_hz,
-                            "sample_rate_hz": submitted.sample_rate_hz,
-                            "gain_db": "auto",
-                            "started_at_utc": "2026-08-26T12:00:00+00:00",
-                            "requested_duration_seconds": submitted.duration_seconds,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                return CaptureResult(data_path, metadata_path, data_path.stat().st_size, "abc")
+    def tearDown(self) -> None:
+        self.connection.close()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
 
-            manager = CaptureManager(config, fake_capture)
-            job = manager.start({"gain_db": "auto"})
-            self.assertEqual(job["state"], "capturing")
-            for _ in range(100):
-                status = manager.status()["active"]
-                if status["state"] != "capturing":
-                    break
-                time.sleep(0.01)
-            self.assertEqual(status["state"], "complete")
+    def test_status_and_static_page(self) -> None:
+        self.connection.request("GET", "/api/live/status")
+        response = self.connection.getresponse()
+        status = json.loads(response.read())
+        self.assertEqual(response.status, 200)
+        self.assertEqual(status["state"], "stopped")
+        self.assertEqual(status["buffer_target_seconds"], 30.0)
 
-            captures = manager.captures()
-            self.assertEqual(len(captures), 1)
-            self.assertEqual(captures[0]["data_file"], "test_capture.cu8")
+        self.connection.request("GET", "/")
+        response = self.connection.getresponse()
+        body = response.read().decode()
+        self.assertEqual(response.status, 200)
+        self.assertIn("Live spectrum", body)
+        self.assertNotIn("Download ZIP", body)
 
-            archive, _, archive_name = build_capture_zip(output_dir, "test_capture.cu8")
-            try:
-                with zipfile.ZipFile(archive) as bundle:
-                    self.assertEqual(
-                        set(bundle.namelist()),
-                        {"test_capture.cu8", "test_capture.cu8.json"},
-                    )
-                self.assertEqual(archive_name, "test_capture.zip")
-            finally:
-                archive.close()
-
-    def test_rejects_unknown_and_out_of_band_settings(self) -> None:
-        manager = CaptureManager(CaptureConfig())
-        with self.assertRaises(ConfigurationError):
-            manager.start({"output_dir": "/tmp/not-allowed"})
-        with self.assertRaises(ConfigurationError):
-            manager.start({"center_frequency_hz": 50_000_000})
-
-    def test_rejects_parallel_capture(self) -> None:
-        def slow_capture(_: CaptureConfig) -> CaptureResult:
-            time.sleep(0.2)
-            raise OSError("stopped")
-
-        manager = CaptureManager(CaptureConfig(duration_seconds=0.001), slow_capture)
-        manager.start({})
-        with self.assertRaises(CaptureBusyError):
-            manager.start({})
+    def test_old_download_api_is_gone(self) -> None:
+        self.connection.request("GET", "/api/captures")
+        response = self.connection.getresponse()
+        response.read()
+        self.assertEqual(response.status, 404)
 
 
 if __name__ == "__main__":

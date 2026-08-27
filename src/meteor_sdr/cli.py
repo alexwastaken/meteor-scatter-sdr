@@ -14,9 +14,9 @@ from .rtl import RtlSdrError, device_diagnostic
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="meteor-sdr",
-        description="Capture raw RTL-SDR I/Q data for meteor-scatter experiments.",
+        description="Monitor RTL-SDR radio data for meteor-scatter experiments.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.2.0")
     commands = parser.add_subparsers(dest="command", required=True)
 
     doctor = commands.add_parser("doctor", help="check rtl-sdr tools and the USB device")
@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--output-dir", type=Path, help="capture directory")
     capture.set_defaults(handler=_capture)
 
-    serve = commands.add_parser("serve", help="open the local capture dashboard")
+    serve = commands.add_parser("serve", help="open the live spectrum and waterfall")
     serve.add_argument("--config", type=Path, help="TOML configuration file")
     serve.add_argument(
         "--host",

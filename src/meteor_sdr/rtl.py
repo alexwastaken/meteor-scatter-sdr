@@ -57,6 +57,24 @@ class RtlSdr:
         command.append(str(output_path))
         return command
 
+    def stream_command(self, config: CaptureConfig) -> list[str]:
+        """Build a continuous rtl_sdr command that writes unsigned I/Q to stdout."""
+        command = [
+            self.resolved_executable(),
+            "-d",
+            config.device,
+            "-f",
+            str(config.center_frequency_hz),
+            "-s",
+            str(config.sample_rate_hz),
+            "-p",
+            str(config.ppm),
+        ]
+        if config.gain_db is not None:
+            command.extend(["-g", str(config.gain_db)])
+        command.append("-")
+        return command
+
     def capture(self, config: CaptureConfig, output_path: Path) -> ProcessResult:
         command = self.command(config, output_path)
         process = subprocess.Popen(

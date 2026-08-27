@@ -1,216 +1,33 @@
-const elements = {
-  form: document.querySelector("#capture-form"),
-  frequency: document.querySelector("#frequency"),
-  sampleRate: document.querySelector("#sample-rate"),
-  duration: document.querySelector("#duration"),
-  gain: document.querySelector("#gain"),
-  autoDownload: document.querySelector("#auto-download"),
-  sizeEstimate: document.querySelector("#size-estimate"),
-  frequencySpan: document.querySelector("#frequency-span"),
-  startButton: document.querySelector("#start-button"),
-  startButtonLabel: document.querySelector("#start-button-label"),
-  progress: document.querySelector("#capture-progress"),
-  progressDetail: document.querySelector("#progress-detail"),
-  progressPercent: document.querySelector("#progress-percent"),
-  progressBar: document.querySelector("#progress-bar"),
-  message: document.querySelector("#message"),
-  captureList: document.querySelector("#capture-list"),
-  refreshButton: document.querySelector("#refresh-button"),
-  connectionPill: document.querySelector("#connection-pill"),
-  connectionLabel: document.querySelector("#connection-label"),
-};
+const elements={form:document.querySelector("#monitor-form"),center:document.querySelector("#center-frequency"),sampleRate:document.querySelector("#sample-rate"),gain:document.querySelector("#gain"),detection:document.querySelector("#detection-frequency"),threshold:document.querySelector("#threshold"),start:document.querySelector("#start-button"),stop:document.querySelector("#stop-button"),connection:document.querySelector("#connection"),connectionLabel:document.querySelector("#connection-label"),bufferValue:document.querySelector("#buffer-value"),bufferMeter:document.querySelector("#buffer-meter"),spanNote:document.querySelector("#span-note"),low:document.querySelector("#low-frequency"),high:document.querySelector("#high-frequency"),excess:document.querySelector("#excess-value"),detectorState:document.querySelector("#detector-state"),message:document.querySelector("#message"),spectrum:document.querySelector("#spectrum"),waterfall:document.querySelector("#waterfall"),spectrumEmpty:document.querySelector("#spectrum-empty"),targetLine:document.querySelector("#target-line"),events:document.querySelector("#event-list"),eventPath:document.querySelector("#event-path"),refresh:document.querySelector("#refresh-button")};
 
-let activeJobId = null;
-let downloadedJobId = null;
+let monitorState="stopped";let latestFrame=null;let waterfallStarted=false;
 
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes)) return "—";
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
-}
+async function request(url,options={}){const response=await fetch(url,options);const payload=await response.json();if(!response.ok)throw new Error(payload.error||`Request failed (${response.status})`);return payload}
+function formatDate(value){return new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit"}).format(new Date(value))}
+function formatBytes(bytes){return `${(bytes/1024/1024).toFixed(1)} MiB`}
+function frequency(value){return `${(value/1e6).toFixed(3)} MHz`}
+function showMessage(text,error=false){elements.message.hidden=false;elements.message.textContent=text;elements.message.classList.toggle("error",error)}
+function clearMessage(){elements.message.hidden=true;elements.message.textContent=""}
 
-function formatDate(value) {
-  if (!value) return "Unknown time";
-  const date = new Date(value);
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
-}
+function updateSpan(){const center=Number(elements.center.value)*1e6;const span=Number(elements.sampleRate.value);const low=center-span/2;const high=center+span/2;elements.spanNote.textContent=`Visible window: ${frequency(low)}–${frequency(high)}`;elements.low.textContent=frequency(low);elements.high.textContent=frequency(high);if(!elements.detection.matches(":focus"))elements.detection.value=elements.center.value}
 
-function updateEstimate() {
-  const frequencyHz = Number(elements.frequency.value) * 1_000_000;
-  const sampleRate = Number(elements.sampleRate.value);
-  const duration = Number(elements.duration.value);
-  elements.sizeEstimate.textContent = formatBytes(sampleRate * duration * 2);
-  const low = (frequencyHz - sampleRate / 2) / 1_000_000;
-  const high = (frequencyHz + sampleRate / 2) / 1_000_000;
-  elements.frequencySpan.textContent = `Listening across approximately ${low.toFixed(3)}–${high.toFixed(3)} MHz`;
-}
+function applyStatus(status){monitorState=status.state;const live=status.state==="running"||status.state==="starting";elements.start.disabled=live;elements.stop.disabled=!live;elements.connection.classList.toggle("live",status.state==="running");elements.connection.classList.toggle("error",status.state==="error");elements.connectionLabel.textContent=status.state==="running"?"Receiver live":status.state==="starting"?"Starting receiver":status.state==="error"?"Receiver error":"Dashboard ready";elements.bufferValue.textContent=`${status.buffer_seconds.toFixed(1)} s`;elements.bufferMeter.style.width=`${Math.min(100,status.buffer_seconds/30*100)}%`;if(status.event_directory)elements.eventPath.textContent=`30-second raw I/Q candidates: ${status.event_directory}`;if(status.error)showMessage(status.error,true)}
 
-function setConnection(state, label) {
-  elements.connectionPill.classList.toggle("connected", state === "connected");
-  elements.connectionPill.classList.toggle("error", state === "error");
-  elements.connectionLabel.textContent = label;
-}
+function fitCanvas(canvas){const rect=canvas.getBoundingClientRect();const ratio=window.devicePixelRatio||1;const width=Math.max(1,Math.round(rect.width*ratio));const height=Math.max(1,Math.round(rect.height*ratio));if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;return true}return false}
+function drawSpectrum(frame){fitCanvas(elements.spectrum);const canvas=elements.spectrum;const ctx=canvas.getContext("2d");const width=canvas.width;const height=canvas.height;const values=frame.spectrum_db;ctx.clearRect(0,0,width,height);ctx.strokeStyle="#122739";ctx.lineWidth=1;for(let i=1;i<5;i++){const y=i*height/5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(width,y);ctx.stroke()}for(let i=1;i<8;i++){const x=i*width/8;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,height);ctx.stroke()}const floor=-90;const ceiling=-10;const point=(value)=>height-(Math.max(floor,Math.min(ceiling,value))-floor)/(ceiling-floor)*height;const fill=ctx.createLinearGradient(0,0,0,height);fill.addColorStop(0,"#43e8d055");fill.addColorStop(1,"#43e8d000");ctx.beginPath();values.forEach((value,index)=>{const x=index/(values.length-1)*width;const y=point(value);if(index===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)});ctx.lineTo(width,height);ctx.lineTo(0,height);ctx.closePath();ctx.fillStyle=fill;ctx.fill();ctx.beginPath();values.forEach((value,index)=>{const x=index/(values.length-1)*width;const y=point(value);if(index===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)});ctx.strokeStyle="#55f0d7";ctx.lineWidth=Math.max(1,window.devicePixelRatio||1);ctx.shadowColor="#43e8d0";ctx.shadowBlur=5;ctx.stroke();ctx.shadowBlur=0}
 
-function showMessage(text, isError = false) {
-  elements.message.hidden = false;
-  elements.message.textContent = text;
-  elements.message.classList.toggle("error", isError);
-}
+function heatColor(db){const t=Math.max(0,Math.min(1,(db+88)/65));const stops=[[3,8,18],[23,43,112],[26,143,176],[48,224,184],[255,191,75],[255,247,219]];const scaled=t*(stops.length-1);const index=Math.min(stops.length-2,Math.floor(scaled));const mix=scaled-index;return stops[index].map((value,i)=>Math.round(value+(stops[index+1][i]-value)*mix))}
+function drawWaterfall(frame){const resized=fitCanvas(elements.waterfall);const canvas=elements.waterfall;const ctx=canvas.getContext("2d",{alpha:false});const rowHeight=Math.max(1,Math.round((window.devicePixelRatio||1)*1.5));if(resized||!waterfallStarted){ctx.fillStyle="#030812";ctx.fillRect(0,0,canvas.width,canvas.height);waterfallStarted=true}else{ctx.drawImage(canvas,0,0,canvas.width,canvas.height-rowHeight,0,rowHeight,canvas.width,canvas.height-rowHeight)}const image=ctx.createImageData(canvas.width,rowHeight);for(let x=0;x<canvas.width;x++){const index=Math.min(frame.spectrum_db.length-1,Math.floor(x/canvas.width*frame.spectrum_db.length));const color=heatColor(frame.spectrum_db[index]);for(let y=0;y<rowHeight;y++){const offset=(y*canvas.width+x)*4;image.data[offset]=color[0];image.data[offset+1]=color[1];image.data[offset+2]=color[2];image.data[offset+3]=255}}ctx.putImageData(image,0,0)}
 
-function clearMessage() {
-  elements.message.hidden = true;
-  elements.message.textContent = "";
-  elements.message.classList.remove("error");
-}
+function consumeFrame(frame){latestFrame=frame;elements.spectrumEmpty.hidden=true;drawSpectrum(frame);drawWaterfall(frame);elements.bufferValue.textContent=`${frame.buffer_seconds.toFixed(1)} s`;elements.bufferMeter.style.width=`${Math.min(100,frame.buffer_seconds/30*100)}%`;elements.excess.textContent=`${frame.excess_db>=0?"+":""}${frame.excess_db.toFixed(1)} dB`;elements.excess.style.color=frame.excess_db>=frame.threshold_db?"var(--amber)":"var(--cyan)";elements.detectorState.textContent=frame.detector_ready?(frame.archived?"Candidate archived":"Detector armed"):"Detector warming";elements.low.textContent=frequency(frame.lower_edge_hz);elements.high.textContent=frequency(frame.upper_edge_hz);const position=(frame.detection_frequency_hz-frame.lower_edge_hz)/(frame.upper_edge_hz-frame.lower_edge_hz)*100;elements.targetLine.style.left=`${Math.max(0,Math.min(100,position))}%`;if(frame.archived){showMessage("Candidate detected — the preceding 30 seconds of raw I/Q were archived.");loadEvents()}}
 
-async function request(url, options = {}) {
-  const response = await fetch(url, options);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
-  return payload;
-}
+function eventRow(event){const row=document.createElement("article");row.className="event-item";const identity=document.createElement("div");const name=document.createElement("strong");name.textContent=event.data_file;const date=document.createElement("small");date.textContent=formatDate(event.triggered_at_utc);identity.append(name,date);row.append(identity,eventStat(frequency(event.detection_frequency_hz),"Watched"),eventStat(`+${Number(event.trigger_excess_db).toFixed(1)} dB`,"Rise"),eventStat(formatBytes(event.byte_count),"Raw I/Q"));return row}
+function eventStat(value,label){const cell=document.createElement("div");cell.className="event-stat";cell.textContent=value;const caption=document.createElement("span");caption.textContent=label;cell.append(caption);return cell}
+async function loadEvents(){try{const payload=await request("/api/events");elements.events.replaceChildren();if(!payload.events.length){const empty=document.createElement("div");empty.className="empty";empty.innerHTML="<span></span><strong>No candidates yet</strong><p>Leave the monitor running; events appear here automatically.</p>";elements.events.append(empty);return}payload.events.forEach(event=>elements.events.append(eventRow(event)))}catch(error){showMessage("Could not read the candidate archive.",true)}}
+async function pollStatus(){try{applyStatus(await request("/api/live/status"))}catch(error){elements.connection.classList.add("error");elements.connectionLabel.textContent="Dashboard offline"}}
 
-function renderJob(job) {
-  if (!job) {
-    elements.progress.hidden = true;
-    elements.startButton.disabled = false;
-    elements.startButtonLabel.textContent = "Start collection";
-    return;
-  }
-  if (job.state === "capturing") {
-    activeJobId = job.id;
-    const percent = Math.round(job.progress * 100);
-    elements.progress.hidden = false;
-    elements.progressPercent.textContent = `${percent}%`;
-    elements.progressBar.style.width = `${percent}%`;
-    elements.progressDetail.textContent = `${Math.min(job.elapsed_seconds, job.duration_seconds).toFixed(1)} of ${job.duration_seconds} seconds`;
-    elements.startButton.disabled = true;
-    elements.startButtonLabel.textContent = "Collection in progress";
-    return;
-  }
+elements.form.addEventListener("submit",async event=>{event.preventDefault();clearMessage();const payload={center_frequency_hz:Math.round(Number(elements.center.value)*1e6),sample_rate_hz:Number(elements.sampleRate.value),gain_db:elements.gain.value==="auto"?"auto":Number(elements.gain.value),detection_frequency_hz:Math.round(Number(elements.detection.value)*1e6),threshold_db:Number(elements.threshold.value)};try{applyStatus(await request("/api/live/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));showMessage("Receiver starting. The detector will arm after its baseline warms and the 30-second buffer fills.")}catch(error){showMessage(error.message,true);pollStatus()}});
+elements.stop.addEventListener("click",async()=>{try{applyStatus(await request("/api/live/stop",{method:"POST"}));showMessage("Monitoring stopped. Unsaved rolling data was discarded.")}catch(error){showMessage(error.message,true)}});elements.center.addEventListener("input",updateSpan);elements.sampleRate.addEventListener("change",updateSpan);elements.refresh.addEventListener("click",loadEvents);window.addEventListener("resize",()=>{if(latestFrame){drawSpectrum(latestFrame);waterfallStarted=false;drawWaterfall(latestFrame)}});
 
-  elements.progress.hidden = true;
-  elements.startButton.disabled = false;
-  elements.startButtonLabel.textContent = "Start another collection";
-  if (job.state === "error") {
-    showMessage(job.error || "Capture failed. Check the terminal for more detail.", true);
-    return;
-  }
-  if (job.state === "complete" && activeJobId === job.id) {
-    activeJobId = null;
-    showMessage(`Collection complete. ${formatBytes(job.result.byte_count)} saved on this Pi.`);
-    loadCaptures();
-    if (elements.autoDownload.checked && downloadedJobId !== job.id) {
-      downloadedJobId = job.id;
-      window.location.assign(`/api/captures/${encodeURIComponent(job.result.data_file)}/download`);
-    }
-  }
-}
-
-async function pollStatus() {
-  try {
-    const payload = await request("/api/status");
-    setConnection("connected", payload.active?.state === "capturing" ? "Recording" : "Receiver ready");
-    renderJob(payload.active);
-  } catch (error) {
-    setConnection("error", "Dashboard offline");
-  }
-}
-
-function captureItem(capture) {
-  const row = document.createElement("article");
-  row.className = "capture-item";
-
-  const primary = document.createElement("div");
-  primary.className = "capture-primary";
-  const filename = document.createElement("strong");
-  filename.textContent = capture.data_file;
-  const timestamp = document.createElement("small");
-  timestamp.textContent = formatDate(capture.started_at_utc);
-  primary.append(filename, timestamp);
-
-  const frequency = stat(`${(capture.center_frequency_hz / 1_000_000).toFixed(3)} MHz`, "Center");
-  const duration = stat(`${capture.duration_seconds ?? "—"} sec`, "Duration");
-  const size = stat(formatBytes(capture.byte_count), "Raw size");
-
-  const download = document.createElement("a");
-  download.className = "download-button";
-  download.href = capture.download_url;
-  download.textContent = "Download ZIP";
-  download.setAttribute("download", "");
-  row.append(primary, frequency, duration, size, download);
-  return row;
-}
-
-function stat(value, label) {
-  const container = document.createElement("div");
-  container.className = "capture-stat";
-  const strong = document.createElement("strong");
-  strong.textContent = value;
-  const small = document.createElement("small");
-  small.textContent = label;
-  container.append(strong, small);
-  return container;
-}
-
-async function loadCaptures() {
-  try {
-    const payload = await request("/api/captures");
-    elements.captureList.replaceChildren();
-    if (!payload.captures.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.innerHTML = '<span class="empty-icon" aria-hidden="true"></span><strong>No captures yet</strong><p>Your first RF collection will appear here.</p>';
-      elements.captureList.append(empty);
-      return;
-    }
-    payload.captures.forEach((capture) => elements.captureList.append(captureItem(capture)));
-  } catch (error) {
-    showMessage("Could not load saved captures.", true);
-  }
-}
-
-elements.form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  clearMessage();
-  elements.startButton.disabled = true;
-  elements.startButtonLabel.textContent = "Starting receiver…";
-  const gain = elements.gain.value === "auto" ? "auto" : Number(elements.gain.value);
-  const payload = {
-    center_frequency_hz: Math.round(Number(elements.frequency.value) * 1_000_000),
-    sample_rate_hz: Number(elements.sampleRate.value),
-    duration_seconds: Number(elements.duration.value),
-    gain_db: gain,
-  };
-  try {
-    const response = await request("/api/captures", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    activeJobId = response.job.id;
-    downloadedJobId = null;
-    renderJob(response.job);
-  } catch (error) {
-    elements.startButton.disabled = false;
-    elements.startButtonLabel.textContent = "Start collection";
-    showMessage(error.message, true);
-  }
-});
-
-elements.frequency.addEventListener("input", updateEstimate);
-elements.sampleRate.addEventListener("change", updateEstimate);
-elements.duration.addEventListener("change", updateEstimate);
-elements.refreshButton.addEventListener("click", loadCaptures);
-
-updateEstimate();
-pollStatus();
-loadCaptures();
-window.setInterval(pollStatus, 600);
+const stream=new EventSource("/api/live/events");stream.addEventListener("frame",event=>consumeFrame(JSON.parse(event.data)));stream.onerror=()=>{if(monitorState==="running"){elements.connection.classList.add("error");elements.connectionLabel.textContent="Stream reconnecting"}};
+updateSpan();pollStatus();loadEvents();window.setInterval(pollStatus,1500);

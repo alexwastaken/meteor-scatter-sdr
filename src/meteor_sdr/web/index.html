@@ -3,178 +3,69 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#08111f">
-    <title>Meteor SDR Receiver</title>
+    <meta name="theme-color" content="#050b13">
+    <title>Meteor SDR Live</title>
     <link rel="stylesheet" href="/app.css">
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <div class="page-shell">
+    <div class="shell">
       <header class="topbar">
-        <a class="brand" href="/" aria-label="Meteor SDR home">
-          <span class="brand-mark" aria-hidden="true"><span></span></span>
-          <span>
-            <strong>Meteor SDR</strong>
-            <small>RF capture station</small>
-          </span>
-        </a>
-        <div class="connection-pill" id="connection-pill">
-          <span class="status-dot"></span>
-          <span id="connection-label">Connecting</span>
-        </div>
+        <div class="brand"><span class="brand-mark"></span><div><strong>Meteor SDR</strong><small>Carmel Valley receiving station</small></div></div>
+        <div class="connection" id="connection"><i></i><span id="connection-label">Dashboard ready</span></div>
       </header>
 
       <main>
-        <section class="hero" aria-labelledby="page-title">
-          <div class="hero-copy">
-            <p class="eyebrow">Carmel Valley receiving station</p>
-            <h1 id="page-title">Turn the sky into data.</h1>
-            <p class="hero-description">
-              Record a clean slice of the FM band from your Yagi and RTL-SDR.
-              Every collection stays on this Raspberry Pi until you download it.
-            </p>
-          </div>
-          <div class="signal-field" aria-hidden="true">
-            <div class="orbit orbit-one"></div>
-            <div class="orbit orbit-two"></div>
-            <div class="orbit orbit-three"></div>
-            <div class="signal-core"></div>
-            <div class="meteor-streak"></div>
-          </div>
+        <section class="intro">
+          <div><p class="eyebrow">LIVE RF MONITOR</p><h1>Watch the sky answer back.</h1><p>A real-time spectrum and waterfall from your RTL-SDR. The Pi continuously holds the most recent 30 seconds in memory and archives that raw I/Q only when it detects a candidate.</p></div>
+          <div class="buffer-card"><span>ROLLING MEMORY</span><strong id="buffer-value">0.0 s</strong><div class="meter"><i id="buffer-meter"></i></div><small>Older non-event data is overwritten automatically.</small></div>
         </section>
 
-        <section class="workspace-grid">
-          <article class="panel capture-panel">
-            <div class="panel-heading">
-              <div>
-                <p class="section-label">New collection</p>
-                <h2>Capture radio data</h2>
-              </div>
-              <span class="local-badge">Local only</span>
-            </div>
+        <section class="control-strip panel">
+          <form id="monitor-form">
+            <label>Center frequency<div class="input-unit"><input id="center-frequency" type="number" min="88" max="107.5" step="0.001" value="100.000" required><span>MHz</span></div></label>
+            <label>Displayed span<select id="sample-rate"><option value="250000">0.250 MHz</option><option value="1024000" selected>1.024 MHz</option><option value="2048000">2.048 MHz</option></select></label>
+            <label>Receiver gain<select id="gain"><option value="auto" selected>Automatic</option><option value="14.4">14.4 dB</option><option value="28.0">28.0 dB</option><option value="40.2">40.2 dB</option></select></label>
+            <label>Watch frequency<div class="input-unit"><input id="detection-frequency" type="number" min="87.5" max="108" step="0.001" value="100.000" required><span>MHz</span></div></label>
+            <label>Trigger rise<select id="threshold"><option value="6">6 dB · sensitive</option><option value="8" selected>8 dB · normal</option><option value="12">12 dB · strict</option></select></label>
+            <div class="actions"><button class="start" id="start-button" type="submit"><i></i>Start monitoring</button><button class="stop" id="stop-button" type="button" disabled>Stop</button></div>
+          </form>
+          <p class="span-note" id="span-note">Visible window: 99.488–100.512 MHz</p>
+          <div class="message" id="message" hidden role="status"></div>
+        </section>
 
-            <form id="capture-form">
-              <div class="frequency-control">
-                <label for="frequency">Center frequency</label>
-                <div class="frequency-input">
-                  <input id="frequency" name="frequency" type="number" min="88" max="107.5" step="0.1" value="100.0" required>
-                  <span>MHz</span>
-                </div>
-                <p class="field-note" id="frequency-span">Listening across approximately 99.488–100.512 MHz</p>
-              </div>
-
-              <div class="control-row">
-                <div class="field-group">
-                  <label for="sample-rate">Signal span</label>
-                  <select id="sample-rate" name="sample-rate">
-                    <option value="250000">0.25 MHz · compact</option>
-                    <option value="1024000" selected>1.024 MHz · recommended</option>
-                    <option value="2048000">2.048 MHz · wide</option>
-                  </select>
-                </div>
-                <div class="field-group">
-                  <label for="duration">Duration</label>
-                  <select id="duration" name="duration">
-                    <option value="5">5 seconds</option>
-                    <option value="10" selected>10 seconds</option>
-                    <option value="30">30 seconds</option>
-                    <option value="60">1 minute</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="control-row">
-                <div class="field-group">
-                  <label for="gain">Receiver gain</label>
-                  <select id="gain" name="gain">
-                    <option value="auto" selected>Automatic</option>
-                    <option value="14.4">14.4 dB · low</option>
-                    <option value="28.0">28.0 dB · medium</option>
-                    <option value="40.2">40.2 dB · high</option>
-                  </select>
-                </div>
-                <div class="estimate-card" aria-live="polite">
-                  <span>Estimated file</span>
-                  <strong id="size-estimate">20.5 MB</strong>
-                </div>
-              </div>
-
-              <label class="checkbox-row" for="auto-download">
-                <input id="auto-download" type="checkbox" checked>
-                <span>
-                  <strong>Download when complete</strong>
-                  <small>Packages raw I/Q and metadata into one ZIP.</small>
-                </span>
-              </label>
-
-              <button class="primary-button" id="start-button" type="submit">
-                <span class="button-icon" aria-hidden="true"></span>
-                <span id="start-button-label">Start collection</span>
-              </button>
-            </form>
-
-            <div class="capture-progress" id="capture-progress" hidden aria-live="polite">
-              <div class="progress-header">
-                <div>
-                  <span class="recording-label"><i></i> Recording RF</span>
-                  <strong id="progress-detail">0 of 10 seconds</strong>
-                </div>
-                <span id="progress-percent">0%</span>
-              </div>
-              <div class="progress-track"><span id="progress-bar"></span></div>
-            </div>
-
-            <div class="message" id="message" hidden role="status"></div>
+        <section class="radio-grid">
+          <article class="panel display-panel spectrum-panel">
+            <div class="panel-heading"><div><p class="eyebrow">FREQUENCY DOMAIN</p><h2>Live spectrum</h2></div><div class="readout"><span>Target rise</span><strong id="excess-value">— dB</strong></div></div>
+            <div class="canvas-wrap"><canvas id="spectrum" aria-label="Live radio frequency spectrum"></canvas><div class="canvas-empty" id="spectrum-empty">Start monitoring to see RF energy</div></div>
+            <div class="axis-labels"><span id="low-frequency">99.488 MHz</span><span>frequency →</span><span id="high-frequency">100.512 MHz</span></div>
           </article>
 
-          <aside class="panel understanding-panel">
-            <p class="section-label">What gets recorded</p>
-            <h2>A precise RF snapshot</h2>
-            <div class="data-flow" aria-label="Capture data flow">
-              <div class="flow-step">
-                <span class="flow-number">01</span>
-                <div><strong>Yagi antenna</strong><small>Focuses FM-band energy</small></div>
-              </div>
-              <div class="flow-line"></div>
-              <div class="flow-step">
-                <span class="flow-number">02</span>
-                <div><strong>RTL-SDR</strong><small>Samples I and Q values</small></div>
-              </div>
-              <div class="flow-line"></div>
-              <div class="flow-step">
-                <span class="flow-number">03</span>
-                <div><strong>Capture bundle</strong><small>Raw .cu8 plus JSON context</small></div>
-              </div>
-            </div>
-            <div class="format-note">
-              <span class="format-mark">IQ</span>
-              <p><strong>Nothing is discarded.</strong> The raw capture can later become a spectrum, waterfall, audio, or meteor-event detector.</p>
-            </div>
-          </aside>
+          <article class="panel display-panel waterfall-panel">
+            <div class="panel-heading"><div><p class="eyebrow">SIGNAL HISTORY</p><h2>Waterfall</h2></div><div class="legend"><span>quiet</span><i></i><span>strong</span></div></div>
+            <div class="canvas-wrap"><canvas id="waterfall" aria-label="Live radio waterfall, newest data at top"></canvas><div class="now-label">NOW</div><div class="target-line" id="target-line"></div></div>
+            <div class="axis-labels"><span>newest at top</span><span>time ↓</span><span id="detector-state">Detector warming</span></div>
+          </article>
         </section>
 
-        <section class="panel library-panel" aria-labelledby="library-title">
-          <div class="panel-heading library-heading">
-            <div>
-              <p class="section-label">Capture library</p>
-              <h2 id="library-title">Saved on this Pi</h2>
-            </div>
-            <button class="secondary-button" id="refresh-button" type="button">Refresh</button>
-          </div>
-          <div class="capture-list" id="capture-list">
-            <div class="empty-state">
-              <span class="empty-icon" aria-hidden="true"></span>
-              <strong>No captures yet</strong>
-              <p>Your first RF collection will appear here.</p>
-            </div>
-          </div>
+        <section class="lower-grid">
+          <article class="panel guide-panel">
+            <p class="eyebrow">FIELD GUIDE</p><h2>What a meteor may look like</h2>
+            <div class="signature"><span class="swatch short"></span><div><strong>Underdense echo</strong><p>A thin, bright vertical dash near your watched frequency, often lasting less than a second.</p></div></div>
+            <div class="signature"><span class="swatch long"></span><div><strong>Overdense echo</strong><p>A brighter, longer, irregular trace that can bend, split, or fade over several seconds.</p></div></div>
+            <div class="signature warning"><span class="swatch wide"></span><div><strong>Probably interference</strong><p>A full-width horizontal flash, a signal that never leaves, or a perfectly repeating pattern.</p></div></div>
+            <p class="caution">Automatic saves are candidates, not confirmed meteors. The strongest evidence is a brief reflection on a normally absent distant station.</p>
+          </article>
+
+          <article class="panel events-panel">
+            <div class="panel-heading"><div><p class="eyebrow">AUTOMATIC ARCHIVE</p><h2>Saved candidates</h2></div><button class="refresh" id="refresh-button" type="button">Refresh</button></div>
+            <p class="event-path" id="event-path">Raw 30-second windows and JSON metadata stay on this Pi.</p>
+            <div id="event-list" class="event-list"><div class="empty"><span></span><strong>No candidates yet</strong><p>Leave the monitor running; events appear here automatically.</p></div></div>
+          </article>
         </section>
       </main>
 
-      <footer>
-        <span>Meteor SDR · Raspberry Pi receiver</span>
-        <span>Files never leave this device unless you download them.</span>
-      </footer>
+      <footer><span>Meteor SDR · Raspberry Pi 4</span><span>No cloud upload · no automatic classification claim</span></footer>
     </div>
   </body>
 </html>
