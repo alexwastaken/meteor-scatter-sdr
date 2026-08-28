@@ -26,6 +26,9 @@ DISPLAY_BINS = 512
 MIN_READ_BYTES = 8_192
 MAX_FRAME_RATE_HZ = 25.0
 RETUNE_FLUSH_SECONDS = 0.08
+AUDIO_SAMPLE_RATE_HZ = 32_000
+AUDIO_RF_RATE_HZ = 256_000
+AUDIO_DEEMPHASIS_SECONDS = 75e-6
 
 
 def stream_read_size(sample_rate_hz: int) -> int:
@@ -42,6 +45,99 @@ class RadioStream(Protocol):
     def stderr_detail(self) -> str: ...
 
     def close(self) -> None: ...
+
+
+class FmAudioDemodulator:
+    """Low-overhead mono wide-FM demodulator for the watched frequency."""
+
+    def __init__(
+        self,
+        sample_rate_hz: int,
+        frequency_offset_hz: int = 0,
+        output_rate_hz: int = AUDIO_SAMPLE_RATE_HZ,
+    ) -> None:
+        self.sample_rate_hz = sample_rate_hz
+        self.frequency_offset_hz = frequency_offset_hz
+        self.output_rate_hz = output_rate_hz
+        self.rf_decimation = max(1, round(sample_rate_hz / AUDIO_RF_RATE_HZ))
+        self.rf_rate_hz = sample_rate_hz / self.rf_decimation
+        self.audio_decimation = max(1, round(self.rf_rate_hz / output_rate_hz))
+        self.intermediate_audio_rate_hz = self.rf_rate_hz / self.audio_decimation
+        self._mixer_phase = 0.0
+        self._previous_iq: complex | None = None
+        self._deemphasis = 0.0
+        self._highpass_previous_input = 0.0
+        self._highpass_previous_output = 0.0
+
+    def process(self, iq_bytes: bytes) -> bytes:
+        raw = np.frombuffer(iq_bytes, dtype=np.uint8)
+        if raw.size < self.rf_decimation * 4:
+            return b""
+        if raw.size % 2:
+            raw = raw[:-1]
+        values = raw.astype(np.float32)
+        samples = (values[0::2] - 127.5) + 1j * (values[1::2] - 127.5)
+
+        if self.frequency_offset_hz:
+            phase_step = -2.0 * math.pi * self.frequency_offset_hz / self.sample_rate_hz
+            phases = self._mixer_phase + phase_step * np.arange(samples.size)
+            samples *= np.exp(1j * phases)
+            self._mixer_phase = float(
+                (self._mixer_phase + phase_step * samples.size) % (2.0 * math.pi)
+            )
+
+        usable = samples.size - samples.size % self.rf_decimation
+        baseband = samples[:usable].reshape(-1, self.rf_decimation).mean(axis=1)
+        if self._previous_iq is not None:
+            baseband = np.concatenate(
+                (np.asarray([self._previous_iq], dtype=np.complex64), baseband)
+            )
+        self._previous_iq = complex(baseband[-1])
+        discriminator = np.angle(baseband[1:] * np.conj(baseband[:-1]))
+        usable_audio = (
+            discriminator.size
+            - discriminator.size % self.audio_decimation
+        )
+        if usable_audio <= 0:
+            return b""
+        audio = discriminator[:usable_audio].reshape(
+            -1, self.audio_decimation
+        ).mean(axis=1)
+
+        if not math.isclose(self.intermediate_audio_rate_hz, self.output_rate_hz):
+            output_count = max(
+                1,
+                round(
+                    audio.size
+                    * self.output_rate_hz
+                    / self.intermediate_audio_rate_hz
+                ),
+            )
+            source_positions = np.linspace(0.0, 1.0, audio.size, endpoint=False)
+            output_positions = np.linspace(0.0, 1.0, output_count, endpoint=False)
+            audio = np.interp(output_positions, source_positions, audio)
+
+        deviation_scale = max(
+            1e-6, 2.0 * math.pi * 75_000.0 / self.rf_rate_hz
+        )
+        audio = audio / deviation_scale
+        deemphasis_alpha = 1.0 / (
+            1.0 + AUDIO_DEEMPHASIS_SECONDS * self.output_rate_hz
+        )
+        highpass_decay = math.exp(-2.0 * math.pi * 30.0 / self.output_rate_hz)
+        filtered = np.empty(audio.size, dtype=np.float32)
+        for index, value in enumerate(audio):
+            self._deemphasis += deemphasis_alpha * (float(value) - self._deemphasis)
+            highpass = (
+                self._deemphasis
+                - self._highpass_previous_input
+                + highpass_decay * self._highpass_previous_output
+            )
+            self._highpass_previous_input = self._deemphasis
+            self._highpass_previous_output = highpass
+            filtered[index] = highpass
+        pcm = np.clip(filtered * 0.8, -1.0, 1.0)
+        return (pcm * 32767.0).astype("<i2").tobytes()
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +467,9 @@ class LiveMonitor:
         self._error: str | None = None
         self._sequence = 0
         self._frame: dict[str, Any] | None = None
+        self._audio_sequence = 0
+        self._audio_chunk: bytes | None = None
+        self._audio_clients = 0
         self._buffer_seconds = 0.0
         self._candidate_count = 0
         self._started_at: str | None = None
@@ -476,6 +575,11 @@ class LiveMonitor:
             "buffer_seconds": round(self._buffer_seconds, 2),
             "buffer_target_seconds": BUFFER_SECONDS,
             "candidate_count": self._candidate_count,
+            "audio": {
+                "available": self._state == "running",
+                "sample_rate_hz": AUDIO_SAMPLE_RATE_HZ,
+                "listeners": self._audio_clients,
+            },
             "settings": {
                 "center_frequency_hz": config.center_frequency_hz,
                 "sample_rate_hz": config.sample_rate_hz,
@@ -499,6 +603,36 @@ class LiveMonitor:
             if self._sequence > after_sequence and self._frame is not None:
                 return self._frame
             return None
+
+    def subscribe_audio(self) -> int:
+        with self._condition:
+            self._audio_clients += 1
+            return self._audio_sequence
+
+    def unsubscribe_audio(self) -> None:
+        with self._condition:
+            self._audio_clients = max(0, self._audio_clients - 1)
+
+    def wait_for_audio(
+        self, after_sequence: int, timeout: float = 2.0
+    ) -> tuple[int, bytes] | None:
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._audio_sequence > after_sequence
+                or self._state in {"error", "stopped"},
+                timeout=timeout,
+            )
+            if self._audio_sequence > after_sequence and self._audio_chunk is not None:
+                return self._audio_sequence, self._audio_chunk
+            return None
+
+    def _publish_audio(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        with self._condition:
+            self._audio_sequence += 1
+            self._audio_chunk = pcm
+            self._condition.notify_all()
 
     def events(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -539,6 +673,10 @@ class LiveMonitor:
         config = settings.config
         analyzer = SpectrumAnalyzer()
         detector = CandidateDetector(settings.threshold_db)
+        audio_demodulator = FmAudioDemodulator(
+            config.sample_rate_hz,
+            settings.detection_frequency_hz - config.center_frequency_hz,
+        )
         ring = RollingIqBuffer(config.sample_rate_hz)
         read_size = stream_read_size(config.sample_rate_hz)
         stream: RadioStream | None = None
@@ -572,6 +710,10 @@ class LiveMonitor:
                     ring = RollingIqBuffer(config.sample_rate_hz)
                     read_size = stream_read_size(config.sample_rate_hz)
                     detector = CandidateDetector(settings.threshold_db)
+                    audio_demodulator = FmAudioDemodulator(
+                        config.sample_rate_hz,
+                        settings.detection_frequency_hz - config.center_frequency_hz,
+                    )
                     discard_bytes = round(
                         config.sample_rate_hz * 2 * RETUNE_FLUSH_SECONDS
                     )
@@ -594,6 +736,11 @@ class LiveMonitor:
                         ring = RollingIqBuffer(config.sample_rate_hz)
                         read_size = stream_read_size(config.sample_rate_hz)
                         detector = CandidateDetector(settings.threshold_db)
+                        audio_demodulator = FmAudioDemodulator(
+                            config.sample_rate_hz,
+                            settings.detection_frequency_hz
+                            - config.center_frequency_hz,
+                        )
                         discard_bytes = round(
                             config.sample_rate_hz * 2 * RETUNE_FLUSH_SECONDS
                         )
@@ -603,10 +750,17 @@ class LiveMonitor:
                         settings = self._settings
                         settings_revision = self._settings_revision
                         detector = CandidateDetector(settings.threshold_db)
+                        audio_demodulator = FmAudioDemodulator(
+                            config.sample_rate_hz,
+                            settings.detection_frequency_hz
+                            - config.center_frequency_hz,
+                        )
                 if discard_bytes:
                     discard_bytes = max(0, discard_bytes - len(block))
                     continue
                 ring.append(block)
+                if self._audio_clients:
+                    self._publish_audio(audio_demodulator.process(block))
                 if len(block) < FFT_SIZE * 2:
                     continue
                 frame_time = time.monotonic()
