@@ -49,13 +49,16 @@
             <button class="tune-step" id="tune-up" type="button" aria-label="Tune 200 kilohertz higher">+ 200 kHz</button>
             <div class="span-control" aria-label="Visible bandwidth">
               <span>SPAN</span>
-              <button type="button" data-span="250000">250 kHz</button>
+              <button class="fm-span" type="button" data-span="250000">FM audio · 250 kHz</button>
               <button class="active" type="button" data-span="1024000">1.024 MHz</button>
               <button type="button" data-span="2048000">2.048 MHz</button>
             </div>
             <button class="secondary receiver-button" id="watch-center" type="button">Watch center</button>
             <button class="secondary receiver-button audio-button" id="audio-button" type="button" disabled>Enable audio</button>
-            <button class="primary receiver-button target-preset" type="button" data-frequency="98.5">Carmel Valley test · 98.5</button>
+            <div class="preset-control" aria-label="Frequency presets">
+              <button class="secondary target-preset" type="button" data-frequency="94.9" data-preset-span="250000">Local FM · 94.9</button>
+              <button class="primary target-preset" type="button" data-frequency="98.5" data-preset-span="1024000">Meteor · 98.5</button>
+            </div>
             <button class="secondary compact retry-button" id="retry-button" type="button" hidden>Retry receiver</button>
             <input id="sample-rate" type="hidden" value="1024000">
             <input id="gain" type="hidden" value="auto">
@@ -78,7 +81,7 @@
             <div class="target-line" id="target-line"><span>WATCH</span></div>
             <div class="retune-overlay" id="retune-overlay" hidden><span>RETUNING</span><strong id="retune-frequency">98.500 MHz</strong></div>
           </div>
-          <div class="receiver-foot"><span>USE ±200 kHz OR ENTER A STATION FREQUENCY</span><span>THE 30-SECOND BUFFER RESTARTS AFTER RETUNING</span></div>
+          <div class="receiver-foot"><span>USE FM AUDIO · 250 kHz FOR LISTENING</span><span>USE 1.024 MHz FOR METEOR DETECTION</span></div>
         </section>
 
         <section class="lower-grid">
