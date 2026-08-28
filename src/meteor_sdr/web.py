@@ -11,7 +11,7 @@ import webbrowser
 
 from .config import CaptureConfig, ConfigurationError
 from .live import LiveMonitor
-from .rtl import RtlSdrError
+from .rtl import RtlSdrError, SimulatedRadioStream
 
 
 MAX_REQUEST_BYTES = 16 * 1024
@@ -39,6 +39,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/live/events":
             self._event_stream()
+            return
+        if path == "/api/live/audio":
+            self._audio_stream()
             return
         if path == "/api/events":
             self._json(HTTPStatus.OK, {"events": self.server.monitor.events()})
@@ -150,20 +153,61 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _audio_stream(self) -> None:
+        status = self.server.monitor.status()
+        if status["state"] != "running":
+            self._json(HTTPStatus.CONFLICT, {"error": "receiver is not running"})
+            return
+        sequence = self.server.monitor.subscribe_audio()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("X-Audio-Format", "pcm_s16le_mono")
+        self.send_header("X-Audio-Sample-Rate", "32000")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            while True:
+                item = self.server.monitor.wait_for_audio(sequence, timeout=2)
+                if item is None:
+                    if self.server.monitor.status()["state"] != "running":
+                        break
+                    continue
+                sequence, pcm = item
+                self.wfile.write(f"{len(pcm):X}\r\n".encode("ascii"))
+                self.wfile.write(pcm)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            self.server.monitor.unsubscribe_audio()
+
 
 def serve_dashboard(
     config: CaptureConfig,
     host: str = "127.0.0.1",
     port: int = 8787,
     open_browser: bool = True,
+    demo_mode: bool = False,
 ) -> None:
-    monitor = LiveMonitor(config)
+    monitor = LiveMonitor(
+        config,
+        source_factory=SimulatedRadioStream if demo_mode else None,
+        source_label="simulation" if demo_mode else "hardware",
+    )
     server = DashboardServer((host, port), monitor)
     monitor.start({})
     actual_port = server.server_address[1]
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{browser_host}:{actual_port}"
     print(f"Meteor SDR live monitor: {url}")
+    if demo_mode:
+        print("Demo mode: synthetic RF with recurring meteor-like pings.")
     if host in {"0.0.0.0", "::"}:
         print("Network access is enabled; use this only on a trusted local network.")
     print("Press Ctrl+C to stop.")
