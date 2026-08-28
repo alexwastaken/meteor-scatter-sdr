@@ -39,6 +39,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn('id="receiver-detail"', body)
         self.assertIn("AUDIO OFF · FOLLOWS WATCH FREQUENCY", body)
         self.assertIn('id="audio-button"', body)
+        self.assertIn("FM audio · 250 kHz", body)
+        self.assertIn("Local FM · 94.9", body)
         self.assertNotIn("interactive-plot", body)
         self.assertNotIn("Start receiver", body)
         self.assertNotIn("Download ZIP", body)
