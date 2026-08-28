@@ -35,7 +35,10 @@ class DashboardHttpTests(unittest.TestCase):
         body = response.read().decode()
         self.assertEqual(response.status, 200)
         self.assertIn("Wideband receiver", body)
-        self.assertIn("SCROLL = TUNE", body)
+        self.assertIn('id="receiver-name"', body)
+        self.assertIn('id="receiver-detail"', body)
+        self.assertIn("BUTTON CONTROLS ONLY", body)
+        self.assertNotIn("interactive-plot", body)
         self.assertNotIn("Start receiver", body)
         self.assertNotIn("Download ZIP", body)
 
