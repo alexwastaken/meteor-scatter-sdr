@@ -11,6 +11,8 @@ samples stay on the Pi.
 - animates the trace smoothly while limiting Raspberry Pi and browser workload
 - provides fixed ±200 kHz, exact-frequency, span, preset, and watch buttons;
   the plots themselves are view-only
+- demodulates live mono FM audio for the watched frequency after you press
+  `Enable audio` (browser autoplay rules require the click)
 - holds exactly the newest 30 seconds of raw I/Q in RAM
 - automatically overwrites older non-event samples instead of filling the disk
 - archives the newest 30 seconds as `.cu8`, JSON, and a waterfall PNG only after
@@ -113,7 +115,8 @@ learns a short baseline; saving is enabled after both the baseline and
 The spectrum and waterfall are view-only. Tune with the fixed ±200 kHz buttons,
 type an exact center frequency, use the Carmel Valley research-target button,
 or change the span between 0.250, 1.024, and 2.048 MHz. `Watch center` moves the
-detector to the receiver's center without retuning.
+detector to the receiver's center without retuning. Live audio follows that
+watch frequency; press `Enable audio` again to turn it off.
 Retuning deliberately clears and refills the 30-second memory so samples from
 different frequency windows are never mixed; moving only the watch line does
 not clear it. Frequency, span, and gain commands are applied to the existing
