@@ -19,59 +19,65 @@
 
       <main>
         <section class="mission-header">
-          <div><p class="kicker">FORWARD-SCATTER RECEIVER</p><h1>Night-sky radio console</h1><p>The receiver begins streaming automatically. Work directly inside the wideband display: scroll to tune, drag to pan, and click to place the meteor watch line.</p></div>
+          <div><p class="kicker">FORWARD-SCATTER RECEIVER</p><h1>Night-sky radio console</h1><p>The receiver begins streaming automatically. The spectrum and waterfall are now view-only; use the dedicated frequency, span, and watch buttons to control the radio.</p></div>
           <div class="mission-stats">
             <div><span>ROLLING BUFFER</span><strong id="buffer-value">0.0 s</strong><div class="meter"><i id="buffer-meter"></i></div></div>
-            <div><span>CENTER</span><strong id="header-center">100.000</strong><small>MHz</small></div>
+            <div><span>CENTER</span><strong id="header-center">98.500</strong><small>MHz</small></div>
             <div><span>FRAME RATE</span><strong id="frame-rate">0.0</strong><small>FPS</small></div>
           </div>
         </section>
 
-        <section class="receiver panel" aria-label="Interactive SDR display">
+        <section class="receiver panel" aria-label="Live SDR display">
           <div class="receiver-head">
             <div><p class="kicker">REAL-TIME ANALYSIS</p><h2>Wideband receiver</h2></div>
             <div class="digital-readouts">
+              <div class="device-readout"><span>RECEIVER</span><strong id="receiver-name">NOT CONNECTED</strong><small id="receiver-detail">USB DEVICE</small></div>
               <div><span>WATCH RISE</span><strong id="excess-value">— dB</strong></div>
               <div><span>DETECTOR</span><strong id="detector-state">STANDBY</strong></div>
               <div><span>MEMORY</span><strong id="memory-state">EMPTY</strong></div>
             </div>
           </div>
 
+          <div class="source-banner" id="source-banner">
+            <strong id="source-title">CHECKING RECEIVER</strong>
+            <span id="source-detail">Waiting for receiver status.</span>
+          </div>
+
           <div class="tuning-deck" aria-label="Receiver tuning controls">
-            <button class="tune-step" id="tune-down" type="button" aria-label="Tune lower">−</button>
-            <label class="frequency-dial"><span>CENTER FREQUENCY</span><span class="dial-input"><input id="center-frequency" type="number" min="88" max="107.5" step="0.001" value="100.000" aria-label="Center frequency in megahertz"><i>MHz</i></span></label>
-            <button class="tune-step" id="tune-up" type="button" aria-label="Tune higher">+</button>
+            <button class="tune-step" id="tune-down" type="button" aria-label="Tune 200 kilohertz lower">− 200 kHz</button>
+            <label class="frequency-dial"><span>CENTER FREQUENCY</span><span class="dial-input"><input id="center-frequency" type="number" min="88" max="107.5" step="0.1" value="98.500" aria-label="Center frequency in megahertz"><i>MHz</i></span></label>
+            <button class="tune-step" id="tune-up" type="button" aria-label="Tune 200 kilohertz higher">+ 200 kHz</button>
             <div class="span-control" aria-label="Visible bandwidth">
               <span>SPAN</span>
               <button type="button" data-span="250000">250 kHz</button>
               <button class="active" type="button" data-span="1024000">1.024 MHz</button>
               <button type="button" data-span="2048000">2.048 MHz</button>
             </div>
+            <button class="secondary receiver-button" id="watch-center" type="button">Watch center</button>
+            <button class="primary receiver-button target-preset" type="button" data-frequency="98.5">Carmel Valley test · 98.5</button>
             <button class="secondary compact retry-button" id="retry-button" type="button" hidden>Retry receiver</button>
             <input id="sample-rate" type="hidden" value="1024000">
             <input id="gain" type="hidden" value="auto">
-            <input id="detection-frequency" type="hidden" value="100.000">
+            <input id="detection-frequency" type="hidden" value="98.500">
             <input id="threshold" type="hidden" value="8">
           </div>
-          <div class="control-footer"><span id="span-note">WINDOW 99.488—100.512 MHz</span><span>SCROLL = TUNE &nbsp;·&nbsp; DRAG = PAN &nbsp;·&nbsp; CLICK = WATCH</span></div>
+          <div class="control-footer"><span id="span-note">WINDOW 97.988—99.012 MHz</span><span>BUTTON CONTROLS ONLY · DISPLAYS ARE VIEW-ONLY</span></div>
           <div class="message" id="message" hidden role="status"></div>
 
-          <div class="plot-label"><span>SPECTRUM / dBFS</span><span id="cursor-readout">MOVE CURSOR OVER DISPLAY</span></div>
-          <div class="plot-wrap spectrum-wrap interactive-plot" data-plot="spectrum">
-            <canvas id="spectrum" aria-label="Interactive live radio frequency spectrum"></canvas>
+          <div class="plot-label"><span>SPECTRUM / dBFS</span><span>LIVE · VIEW ONLY</span></div>
+          <div class="plot-wrap spectrum-wrap">
+            <canvas id="spectrum" aria-label="Live radio frequency spectrum"></canvas>
             <div class="canvas-empty" id="spectrum-empty">AWAITING RF STREAM</div>
-            <div class="crosshair" id="spectrum-crosshair"></div>
           </div>
-          <div class="frequency-axis"><span id="low-frequency">99.488 MHz</span><span id="quarter-frequency">99.744</span><strong id="axis-center">100.000 MHz</strong><span id="three-quarter-frequency">100.256</span><span id="high-frequency">100.512 MHz</span></div>
+          <div class="frequency-axis"><span id="low-frequency">97.988 MHz</span><span id="quarter-frequency">98.244</span><strong id="axis-center">98.500 MHz</strong><span id="three-quarter-frequency">98.756</span><span id="high-frequency">99.012 MHz</span></div>
 
           <div class="plot-label waterfall-label"><span>WATERFALL / NEWEST SIGNAL AT TOP</span><span>TIME ▼</span></div>
-          <div class="plot-wrap waterfall-wrap interactive-plot" data-plot="waterfall">
-            <canvas id="waterfall" aria-label="Interactive live radio waterfall"></canvas>
+          <div class="plot-wrap waterfall-wrap">
+            <canvas id="waterfall" aria-label="Live radio waterfall"></canvas>
             <div class="target-line" id="target-line"><span>WATCH</span></div>
-            <div class="crosshair" id="waterfall-crosshair"></div>
-            <div class="retune-overlay" id="retune-overlay" hidden><span>RETUNING</span><strong id="retune-frequency">100.000 MHz</strong></div>
+            <div class="retune-overlay" id="retune-overlay" hidden><span>RETUNING</span><strong id="retune-frequency">98.500 MHz</strong></div>
           </div>
-          <div class="receiver-foot"><span>SCROLL THROUGH THE BAND · CLICK A SIGNAL TO WATCH IT</span><span>THE 30-SECOND BUFFER RESTARTS AFTER RETUNING</span></div>
+          <div class="receiver-foot"><span>USE ±200 kHz OR ENTER A STATION FREQUENCY</span><span>THE 30-SECOND BUFFER RESTARTS AFTER RETUNING</span></div>
         </section>
 
         <section class="lower-grid">
@@ -86,7 +92,7 @@
             <div class="signature"><span class="sample short"></span><div><strong>UNDERDENSE</strong><p>Brief, thin vertical trace near the watched frequency.</p></div></div>
             <div class="signature"><span class="sample long"></span><div><strong>OVERDENSE</strong><p>Longer bright trace that bends, splits, or fades irregularly.</p></div></div>
             <div class="signature"><span class="sample wide"></span><div><strong>INTERFERENCE</strong><p>Full-width flash, permanent carrier, or perfectly repeating pattern.</p></div></div>
-            <p class="warning">Saved events are unconfirmed candidates. Inspect the preview and raw data before calling one a meteor.</p>
+            <p class="warning">The detector waits for a multi-frame rise and decay and rejects band-wide flashes. Saved events remain unconfirmed candidates, not proof of a meteor.</p>
           </aside>
         </section>
       </main>
