@@ -37,7 +37,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("Wideband receiver", body)
         self.assertIn('id="receiver-name"', body)
         self.assertIn('id="receiver-detail"', body)
-        self.assertIn("BUTTON CONTROLS ONLY", body)
+        self.assertIn("AUDIO OFF · FOLLOWS WATCH FREQUENCY", body)
+        self.assertIn('id="audio-button"', body)
         self.assertNotIn("interactive-plot", body)
         self.assertNotIn("Start receiver", body)
         self.assertNotIn("Download ZIP", body)
@@ -54,6 +55,13 @@ class DashboardHttpTests(unittest.TestCase):
         response = self.connection.getresponse()
         response.read()
         self.assertEqual(response.status, 404)
+
+    def test_audio_stream_requires_a_running_receiver(self) -> None:
+        self.connection.request("GET", "/api/live/audio")
+        response = self.connection.getresponse()
+        payload = json.loads(response.read())
+        self.assertEqual(response.status, 409)
+        self.assertEqual(payload["error"], "receiver is not running")
 
 
 if __name__ == "__main__":
