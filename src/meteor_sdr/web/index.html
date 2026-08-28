@@ -54,6 +54,7 @@
               <button type="button" data-span="2048000">2.048 MHz</button>
             </div>
             <button class="secondary receiver-button" id="watch-center" type="button">Watch center</button>
+            <button class="secondary receiver-button audio-button" id="audio-button" type="button" disabled>Enable audio</button>
             <button class="primary receiver-button target-preset" type="button" data-frequency="98.5">Carmel Valley test · 98.5</button>
             <button class="secondary compact retry-button" id="retry-button" type="button" hidden>Retry receiver</button>
             <input id="sample-rate" type="hidden" value="1024000">
@@ -61,7 +62,7 @@
             <input id="detection-frequency" type="hidden" value="98.500">
             <input id="threshold" type="hidden" value="8">
           </div>
-          <div class="control-footer"><span id="span-note">WINDOW 97.988—99.012 MHz</span><span>BUTTON CONTROLS ONLY · DISPLAYS ARE VIEW-ONLY</span></div>
+          <div class="control-footer"><span id="span-note">WINDOW 97.988—99.012 MHz</span><span id="audio-note">AUDIO OFF · FOLLOWS WATCH FREQUENCY</span></div>
           <div class="message" id="message" hidden role="status"></div>
 
           <div class="plot-label"><span>SPECTRUM / dBFS</span><span>LIVE · VIEW ONLY</span></div>
