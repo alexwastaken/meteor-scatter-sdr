@@ -7,13 +7,14 @@ samples stay on the Pi.
 ## What this version does
 
 - streams unsigned 8-bit I/Q directly from USB through the maintained `pyrtlsdr` module
-- starts a lightweight 256-bin live spectrum and waterfall automatically
+- starts a detailed 512-bin live spectrum and waterfall automatically
 - animates the trace smoothly while limiting Raspberry Pi and browser workload
-- lets you scroll to tune, drag to pan, and click a signal to move the watch line
+- provides fixed ±200 kHz, exact-frequency, span, preset, and watch buttons;
+  the plots themselves are view-only
 - holds exactly the newest 30 seconds of raw I/Q in RAM
 - automatically overwrites older non-event samples instead of filling the disk
-- archives the preceding 30 seconds as `.cu8`, JSON, and a waterfall PNG when
-  an adaptive narrowband level detector flags a candidate
+- archives the newest 30 seconds as `.cu8`, JSON, and a waterfall PNG only after
+  a multi-frame channel rise has decayed and passed a broadband-RFI check
 
 An automatic save is **not proof of a meteor**. Local interference, aircraft,
 tropospheric propagation, and transmitter changes can all produce candidates.
@@ -77,6 +78,18 @@ Reboot and run `meteor-sdr doctor` again.
 
 ## Start the live application
 
+To explore the complete interface before the USB receiver is available, start
+the synthetic RF source:
+
+```bash
+meteor-sdr serve --demo --port 8788
+```
+
+Demo mode drives the real spectrum, waterfall, tuning controls, rolling buffer,
+and detector with repeatable noise, carriers, and recurring meteor-like pings.
+The top-right indicator reads `SIMULATION LIVE`, so simulated samples cannot be
+mistaken for antenna data.
+
 On the Pi desktop:
 
 ```bash
@@ -97,10 +110,10 @@ The receiver starts automatically with `meteor-sdr serve`. The detector first
 learns a short baseline; saving is enabled after both the baseline and
 30-second buffer are ready.
 
-All normal tuning happens inside the wideband receiver. Scroll over the spectrum
-or waterfall to move higher or lower, drag left or right to pan, click a signal
-to place the meteor watch line, or type an exact center frequency into the
-receiver dial. The span buttons switch between 0.250, 1.024, and 2.048 MHz.
+The spectrum and waterfall are view-only. Tune with the fixed ±200 kHz buttons,
+type an exact center frequency, use the Carmel Valley research-target button,
+or change the span between 0.250, 1.024, and 2.048 MHz. `Watch center` moves the
+detector to the receiver's center without retuning.
 Retuning deliberately clears and refills the 30-second memory so samples from
 different frequency windows are never mixed; moving only the watch line does
 not clear it. Frequency, span, and gain commands are applied to the existing
@@ -129,10 +142,13 @@ frequency. Meteor-scatter observing works best when the watched frequency is a
 specific distant transmitter that is normally absent at your location, not an
 arbitrary busy local FM station.
 
-The current FM Yagi is useful for learning the system, but serious forward-
-scatter work is commonly done around a carefully selected lower-VHF beacon or
-transmitter. Selecting and validating the best target for Carmel Valley is the
-next experimental step.
+For the current Carmel Valley setup, start with **98.5 MHz** and point the Yagi
+roughly east-northeast. The intended test transmitter is KRFM in Show Low,
+Arizona, roughly 690 km away. A local SDR survey found 98.5 MHz materially
+quieter than the other researched high-power targets, 100.5 MHz near Sacramento
+and 106.9 MHz in San Francisco. This is a test target rather than guaranteed
+station attribution: co-channel transmitters and antenna direction matter, so
+re-run a local survey after moving the antenna.
 
 ## Reading the display
 
@@ -148,9 +164,12 @@ the newest row is at the top and older rows move downward.
   line, regularly repeating pattern, or activity across many frequencies is
   also less likely to be a meteor.
 
-Use the saved PNG for a quick visual review and the JSON to see why the detector
-fired. The matching 30-second `.cu8` file remains the full-fidelity source. It
-contains the entire displayed span, not just the watched bin.
+The detector learns robust median baselines for the watched FM channel and for
+the surrounding spectrum. It requires at least two elevated frames, waits for
+three frames near baseline, rejects a simultaneous surrounding-band rise, and
+records the peak, duration, and `underdense_like` or `overdense_like` profile in
+JSON. Use the saved PNG for a quick visual review. The matching 30-second `.cu8`
+file remains the full-fidelity source and contains the entire displayed span.
 
 ## Raw capture compatibility
 
