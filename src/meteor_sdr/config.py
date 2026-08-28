@@ -20,7 +20,7 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CaptureConfig:
-    center_frequency_hz: int = 100_000_000
+    center_frequency_hz: int = 98_500_000
     sample_rate_hz: int = 1_024_000
     gain_db: float | None = None
     ppm: int = 0
@@ -98,7 +98,7 @@ def load_config(path: Path | None) -> CaptureConfig:
 
     config = CaptureConfig(
         center_frequency_hz=_integer(
-            radio.get("center_frequency_hz", 100_000_000), "center_frequency_hz"
+            radio.get("center_frequency_hz", 98_500_000), "center_frequency_hz"
         ),
         sample_rate_hz=_integer(
             radio.get("sample_rate_hz", 1_024_000), "sample_rate_hz"
