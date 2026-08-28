@@ -6,7 +6,7 @@ samples stay on the Pi.
 
 ## What this version does
 
-- streams unsigned 8-bit I/Q through one persistent local `rtl_tcp` connection
+- streams unsigned 8-bit I/Q directly from USB through the maintained `pyrtlsdr` module
 - starts a lightweight 256-bin live spectrum and waterfall automatically
 - animates the trace smoothly while limiting Raspberry Pi and browser workload
 - lets you scroll to tune, drag to pan, and click a signal to move the watch line
@@ -105,6 +105,8 @@ Retuning deliberately clears and refills the 30-second memory so samples from
 different frequency windows are never mixed; moving only the watch line does
 not clear it. Frequency, span, and gain commands are applied to the existing
 radio stream, so normal tuning no longer stops and relaunches the receiver.
+The direct USB binding removes the extra TCP process and its queue from the live
+waterfall path.
 
 At the recommended 1.024 MS/s setting, the RAM ring is about 61.4 MB and each
 saved candidate is about 61.4 MB. Candidate files are stored under:

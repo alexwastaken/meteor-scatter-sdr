@@ -10,6 +10,7 @@ import struct
 import subprocess
 import threading
 import time
+from typing import Any
 
 from .config import CaptureConfig
 
@@ -104,6 +105,89 @@ class RtlSdr:
             detail = result.stderr or f"rtl_sdr exited with status {result.returncode}"
             raise RtlSdrError(detail)
         return result
+
+
+class RtlPyStream:
+    """Low-latency direct USB stream powered by the maintained pyrtlsdr binding."""
+
+    def __init__(self, config: CaptureConfig) -> None:
+        try:
+            from rtlsdr import RtlSdr as PyRtlSdr
+        except (ImportError, OSError) as exc:
+            raise RtlSdrError(
+                "PyRTLSDR could not load. Activate the project virtual environment, "
+                "run 'python -m pip install -e .', and confirm the rtl-sdr system "
+                f"package is installed. Detail: {exc}"
+            ) from exc
+
+        device = config.device.strip()
+        arguments: dict[str, Any]
+        if device.isdigit():
+            arguments = {"device_index": int(device)}
+        else:
+            arguments = {"serial_number": device}
+        try:
+            self._sdr = PyRtlSdr(**arguments)
+        except Exception as exc:
+            raise RtlSdrError(f"PyRTLSDR could not open receiver {device}: {exc}") from exc
+
+        self._lock = threading.RLock()
+        self._closed = False
+        self._config: CaptureConfig | None = None
+        self._last_error = ""
+        try:
+            self.tune(config)
+        except Exception:
+            self.close()
+            raise
+
+    def read(self, size: int) -> bytes:
+        with self._lock:
+            if self._closed:
+                return b""
+            try:
+                return bytes(self._sdr.read_bytes(size))
+            except Exception as exc:
+                if self._closed:
+                    return b""
+                self._last_error = str(exc)
+                raise RtlSdrError(f"PyRTLSDR sample read failed: {exc}") from exc
+
+    def tune(self, config: CaptureConfig) -> None:
+        config = config.validated()
+        with self._lock:
+            if self._closed:
+                raise RtlSdrError("PyRTLSDR receiver is closed")
+            previous = self._config
+            try:
+                if previous is None or previous.sample_rate_hz != config.sample_rate_hz:
+                    self._sdr.sample_rate = config.sample_rate_hz
+                if previous is None or previous.ppm != config.ppm:
+                    self._sdr.freq_correction = config.ppm
+                if (
+                    previous is None
+                    or previous.center_frequency_hz != config.center_frequency_hz
+                ):
+                    self._sdr.center_freq = config.center_frequency_hz
+                if previous is None or previous.gain_db != config.gain_db:
+                    self._sdr.gain = "auto" if config.gain_db is None else config.gain_db
+            except Exception as exc:
+                self._last_error = str(exc)
+                raise RtlSdrError(f"PyRTLSDR tuning failed: {exc}") from exc
+            self._config = config
+
+    def stderr_detail(self) -> str:
+        return self._last_error
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._sdr.close()
+            except Exception as exc:
+                self._last_error = str(exc)
 
 
 class RtlTcpStream:

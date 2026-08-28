@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from importlib.util import find_spec
 from pathlib import Path
 import shutil
 import sys
@@ -16,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="meteor-sdr",
         description="Monitor RTL-SDR radio data for meteor-scatter experiments.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.5.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.6.0")
     commands = parser.add_subparsers(dest="command", required=True)
 
     doctor = commands.add_parser("doctor", help="check rtl-sdr tools and the USB device")
@@ -81,13 +82,16 @@ def main(argv: list[str] | None = None) -> int:
 
 def _doctor(_: argparse.Namespace) -> int:
     rtl_sdr = shutil.which("rtl_sdr")
-    rtl_tcp = shutil.which("rtl_tcp")
     rtl_test = shutil.which("rtl_test")
+    pyrtlsdr = find_spec("rtlsdr")
     print(f"rtl_sdr: {rtl_sdr or 'not found'}")
-    print(f"rtl_tcp: {rtl_tcp or 'not found'}")
     print(f"rtl_test: {rtl_test or 'not found'}")
-    if rtl_sdr is None or rtl_tcp is None or rtl_test is None:
-        print("Install them with: sudo apt update && sudo apt install rtl-sdr")
+    print(f"pyrtlsdr: {'available' if pyrtlsdr else 'not found in this Python environment'}")
+    if rtl_sdr is None or rtl_test is None:
+        print("Install both with: sudo apt update && sudo apt install rtl-sdr")
+        return 1
+    if pyrtlsdr is None:
+        print("Activate .venv and run: python -m pip install -e .")
         return 1
 
     healthy, detail = device_diagnostic()

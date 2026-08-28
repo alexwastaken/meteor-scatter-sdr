@@ -2,6 +2,10 @@
   display: none;
 }
 
+.canvas-empty[hidden] {
+  display: none;
+}
+
 .retune-overlay {
   inset: 10px 10px auto auto;
   display: block;

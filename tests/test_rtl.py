@@ -1,11 +1,14 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import os
+import sys
 import time
+import types
 import unittest
+from unittest.mock import patch
 
 from meteor_sdr.config import CaptureConfig
-from meteor_sdr.rtl import RtlTcpStream
+from meteor_sdr.rtl import RtlPyStream, RtlTcpStream
 
 
 class RtlTcpStreamTests(unittest.TestCase):
@@ -65,6 +68,52 @@ class RtlTcpStreamTests(unittest.TestCase):
                 )
             finally:
                 stream.close()
+
+
+class RtlPyStreamTests(unittest.TestCase):
+    def test_direct_binding_reads_raw_bytes_and_retunes_open_device(self) -> None:
+        instances = []
+
+        class FakePyRtlSdr:
+            def __init__(self, **arguments) -> None:
+                self.arguments = arguments
+                self.sample_rate = None
+                self.freq_correction = None
+                self.center_freq = None
+                self.gain = None
+                self.closed = False
+                instances.append(self)
+
+            def read_bytes(self, size: int) -> bytearray:
+                return bytearray([127, 128]) * (size // 2)
+
+            def close(self) -> None:
+                self.closed = True
+
+        module = types.ModuleType("rtlsdr")
+        module.RtlSdr = FakePyRtlSdr
+        with patch.dict(sys.modules, {"rtlsdr": module}):
+            stream = RtlPyStream(
+                CaptureConfig(
+                    center_frequency_hz=100_000_000,
+                    sample_rate_hz=1_024_000,
+                )
+            )
+            try:
+                self.assertEqual(instances[0].arguments, {"device_index": 0})
+                self.assertEqual(len(stream.read(8_192)), 8_192)
+                stream.tune(
+                    CaptureConfig(
+                        center_frequency_hz=100_250_000,
+                        sample_rate_hz=1_024_000,
+                        gain_db=28.0,
+                    )
+                )
+                self.assertEqual(instances[0].center_freq, 100_250_000)
+                self.assertEqual(instances[0].gain, 28.0)
+            finally:
+                stream.close()
+        self.assertTrue(instances[0].closed)
 
 
 if __name__ == "__main__":

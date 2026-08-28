@@ -15,6 +15,7 @@ from meteor_sdr.live import (
     SpectrumAnalyzer,
     render_waterfall_png,
     settings_from_payload,
+    stream_read_size,
 )
 
 
@@ -49,6 +50,11 @@ class LivePipelineTests(unittest.TestCase):
         self.assertEqual(ring.capacity, 8)
         self.assertEqual(ring.snapshot(), b"34567890")
         self.assertEqual(ring.fill_ratio, 1.0)
+
+    def test_stream_reads_are_short_and_usb_aligned(self) -> None:
+        self.assertEqual(stream_read_size(250_000), 8_192)
+        self.assertEqual(stream_read_size(1_024_000) % 512, 0)
+        self.assertLessEqual(stream_read_size(1_024_000), 21_000)
 
     def test_spectrum_finds_a_complex_tone(self) -> None:
         analyzer = SpectrumAnalyzer(fft_size=4096, display_bins=512)

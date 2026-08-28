@@ -44,6 +44,7 @@ class DashboardHttpTests(unittest.TestCase):
         stylesheet = response.read().decode()
         self.assertEqual(response.status, 200)
         self.assertIn(".retune-overlay[hidden]", stylesheet)
+        self.assertIn(".canvas-empty[hidden]", stylesheet)
 
     def test_old_download_api_is_gone(self) -> None:
         self.connection.request("GET", "/api/captures")

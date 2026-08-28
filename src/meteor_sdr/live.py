@@ -17,15 +17,21 @@ import zlib
 import numpy as np
 
 from .config import CaptureConfig, ConfigurationError
-from .rtl import RtlSdrError, RtlTcpStream
+from .rtl import RtlPyStream, RtlSdrError
 
 
 BUFFER_SECONDS = 30.0
 FFT_SIZE = 4096
 DISPLAY_BINS = 256
-READ_BYTES = 32_768
-MAX_FRAME_RATE_HZ = 22.0
-RETUNE_FLUSH_SECONDS = 0.15
+MIN_READ_BYTES = 8_192
+MAX_FRAME_RATE_HZ = 25.0
+RETUNE_FLUSH_SECONDS = 0.08
+
+
+def stream_read_size(sample_rate_hz: int) -> int:
+    """Read about 10 ms in power-of-two blocks favored by librtlsdr/libusb."""
+    target = max(MIN_READ_BYTES, sample_rate_hz * 2 / 100)
+    return 1 << round(math.log2(target))
 
 
 class RadioStream(Protocol):
@@ -225,7 +231,7 @@ class LiveMonitor:
         source_factory: Callable[[CaptureConfig], RadioStream] | None = None,
     ) -> None:
         self.base_config = base_config.validated()
-        self._source_factory = source_factory or RtlTcpStream
+        self._source_factory = source_factory or RtlPyStream
         self._condition = Condition(RLock())
         self._stop = Event()
         self._thread: Thread | None = None
@@ -392,6 +398,7 @@ class LiveMonitor:
         analyzer = SpectrumAnalyzer()
         detector = CandidateDetector(settings.threshold_db)
         ring = RollingIqBuffer(config.sample_rate_hz)
+        read_size = stream_read_size(config.sample_rate_hz)
         stream: RadioStream | None = None
         discard_bytes = 0
         try:
@@ -406,6 +413,7 @@ class LiveMonitor:
                     config = settings.config
                     stream.tune(config)
                     ring = RollingIqBuffer(config.sample_rate_hz)
+                    read_size = stream_read_size(config.sample_rate_hz)
                     detector = CandidateDetector(settings.threshold_db)
                     discard_bytes = round(
                         config.sample_rate_hz * 2 * RETUNE_FLUSH_SECONDS
@@ -414,7 +422,7 @@ class LiveMonitor:
                 self._condition.notify_all()
             last_frame_time = 0.0
             while not self._stop.is_set():
-                block = stream.read(READ_BYTES)
+                block = stream.read(read_size)
                 if block is None:
                     continue
                 if block == b"":
@@ -427,6 +435,7 @@ class LiveMonitor:
                         radio_revision = self._radio_revision
                         config = settings.config
                         ring = RollingIqBuffer(config.sample_rate_hz)
+                        read_size = stream_read_size(config.sample_rate_hz)
                         detector = CandidateDetector(settings.threshold_db)
                         discard_bytes = round(
                             config.sample_rate_hz * 2 * RETUNE_FLUSH_SECONDS
