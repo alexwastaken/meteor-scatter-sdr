@@ -10,6 +10,7 @@ from meteor_sdr.config import CaptureConfig, ConfigurationError
 from meteor_sdr.live import (
     CandidateDetector,
     DetectionResult,
+    FmAudioDemodulator,
     LiveMonitor,
     LiveSettings,
     RollingIqBuffer,
@@ -89,6 +90,28 @@ class LivePipelineTests(unittest.TestCase):
         peak = int(np.argmax(spectrum))
         expected = round((offset_hz + sample_rate / 2) / (sample_rate / 512))
         self.assertLessEqual(abs(peak - expected), 1)
+
+    def test_fm_audio_demodulates_the_watched_station(self) -> None:
+        sample_rate = 1_024_000
+        sample_count = 65_536
+        time_axis = np.arange(sample_count) / sample_rate
+        instantaneous_frequency = 100_000 + 25_000 * np.sin(
+            2 * np.pi * 1_000 * time_axis
+        )
+        phase = np.cumsum(2 * np.pi * instantaneous_frequency / sample_rate)
+        samples = 0.8 * np.exp(1j * phase)
+        interleaved = np.empty(sample_count * 2, dtype=np.uint8)
+        interleaved[0::2] = np.clip(samples.real * 127.5 + 127.5, 0, 255)
+        interleaved[1::2] = np.clip(samples.imag * 127.5 + 127.5, 0, 255)
+
+        demodulator = FmAudioDemodulator(sample_rate, frequency_offset_hz=100_000)
+        pcm = np.frombuffer(demodulator.process(interleaved.tobytes()), dtype="<i2")
+        self.assertGreater(pcm.size, 1_500)
+        spectrum = np.abs(np.fft.rfft(pcm[300:] * np.hanning(pcm.size - 300)))
+        frequencies = np.fft.rfftfreq(pcm.size - 300, 1 / 32_000)
+        peak_frequency = frequencies[int(np.argmax(spectrum[1:])) + 1]
+        self.assertLess(abs(peak_frequency - 1_000), 40)
+        self.assertGreater(float(np.sqrt(np.mean(pcm.astype(float) ** 2))), 1_000)
 
     def test_detector_requires_a_rise_and_completed_decay(self) -> None:
         detector = CandidateDetector(threshold_db=8, warmup_frames=3, cooldown=10)
@@ -188,7 +211,28 @@ class LivePipelineTests(unittest.TestCase):
             self.assertEqual(status["source"], "hardware")
             self.assertTrue(status["receiver"]["connected"])
             self.assertEqual(status["receiver"]["display_name"], "RTL-SDR receiver")
+            self.assertTrue(status["audio"]["available"])
+            self.assertEqual(status["audio"]["sample_rate_hz"], 32_000)
         finally:
+            monitor.close()
+
+    def test_monitor_publishes_audio_only_for_a_listener(self) -> None:
+        monitor = LiveMonitor(
+            CaptureConfig(sample_rate_hz=250_000),
+            source_factory=FakeRadioStream,
+        )
+        sequence = monitor.subscribe_audio()
+        try:
+            monitor.start({})
+            item = monitor.wait_for_audio(sequence, timeout=2)
+            self.assertIsNotNone(item)
+            assert item is not None
+            next_sequence, pcm = item
+            self.assertGreater(next_sequence, sequence)
+            self.assertGreater(len(pcm), 0)
+            self.assertEqual(len(pcm) % 2, 0)
+        finally:
+            monitor.unsubscribe_audio()
             monitor.close()
 
     def test_live_tuning_reuses_stream_at_new_center(self) -> None:
