@@ -106,7 +106,7 @@
 
 .tuning-deck {
   display: grid;
-  grid-template-columns: 104px minmax(180px, 250px) 104px minmax(300px, 1fr) 128px 190px auto;
+  grid-template-columns: 104px minmax(180px, 250px) 104px minmax(270px, 1fr) 128px 128px 190px auto;
   align-items: end;
   gap: 8px;
   padding: 12px;
@@ -130,6 +130,13 @@
   height: 43px;
   align-self: end;
   white-space: nowrap;
+}
+
+.audio-button.active {
+  border-color: #087abc;
+  background: #00101b;
+  color: #89dcff;
+  box-shadow: inset 0 0 16px #008cff24, 0 0 10px #008cff1a;
 }
 
 .plot-wrap {
