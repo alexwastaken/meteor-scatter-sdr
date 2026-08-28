@@ -117,6 +117,13 @@ type an exact center frequency, use the Carmel Valley research-target button,
 or change the span between 0.250, 1.024, and 2.048 MHz. `Watch center` moves the
 detector to the receiver's center without retuning. Live audio follows that
 watch frequency; press `Enable audio` again to turn it off.
+
+For ordinary broadcast listening, select **FM audio · 250 kHz**. This keeps one
+approximately 200 kHz-wide US FM channel in the receiver while excluding most
+adjacent-channel spectrum. The **Local FM · 94.9** preset selects that span and
+station together for a quick audio check. The **Meteor · 98.5** preset returns
+to the 1.024 MHz span needed by the candidate detector's surrounding-band RFI
+comparison.
 Retuning deliberately clears and refills the 30-second memory so samples from
 different frequency windows are never mixed; moving only the watch line does
 not clear it. Frequency, span, and gain commands are applied to the existing
