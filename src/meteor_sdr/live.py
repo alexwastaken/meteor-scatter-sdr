@@ -22,7 +22,7 @@ from .rtl import RtlPyStream, RtlSdrError
 
 BUFFER_SECONDS = 30.0
 FFT_SIZE = 4096
-DISPLAY_BINS = 256
+DISPLAY_BINS = 512
 MIN_READ_BYTES = 8_192
 MAX_FRAME_RATE_HZ = 25.0
 RETUNE_FLUSH_SECONDS = 0.08
@@ -113,6 +113,13 @@ class SpectrumAnalyzer:
         return grouped.astype(np.float32)
 
 
+def mean_power_db(values_db: np.ndarray) -> float:
+    """Average logarithmic spectrum bins in linear power space."""
+    if values_db.size == 0:
+        raise ValueError("at least one spectrum bin is required")
+    return float(10.0 * np.log10(np.mean(np.power(10.0, values_db / 10.0))))
+
+
 def render_waterfall_png(
     iq_bytes: bytes,
     analyzer: SpectrumAnalyzer | None = None,
@@ -156,33 +163,152 @@ def render_waterfall_png(
     ) + chunk(b"IEND", b"")
 
 
-class CandidateDetector:
-    """Adaptive narrowband level detector; its output is a candidate, not proof."""
+@dataclass(frozen=True, slots=True)
+class DetectionResult:
+    """State from one detector update; `completed` still means unconfirmed."""
 
-    def __init__(self, threshold_db: float, warmup_frames: int = 40, cooldown: float = 15.0) -> None:
+    completed: bool
+    active: bool
+    excess_db: float
+    baseline_db: float | None
+    reference_excess_db: float
+    effective_threshold_db: float
+    duration_seconds: float | None = None
+    peak_excess_db: float | None = None
+    peak_level_db: float | None = None
+    profile: str | None = None
+
+
+class CandidateDetector:
+    """Profile-aware detector that rejects single-frame and broadband flashes."""
+
+    def __init__(
+        self,
+        threshold_db: float,
+        warmup_frames: int = 125,
+        cooldown: float = 15.0,
+        start_frames: int = 2,
+        release_frames: int = 3,
+    ) -> None:
         self.threshold_db = threshold_db
         self.warmup_frames = warmup_frames
         self.cooldown = cooldown
-        self.history: deque[float] = deque(maxlen=240)
+        self.start_frames = start_frames
+        self.release_frames = release_frames
+        self.history: deque[float] = deque(maxlen=375)
+        self.reference_history: deque[float] = deque(maxlen=375)
         self.consecutive = 0
-        self.last_trigger = -math.inf
+        self.quiet_frames = 0
+        self.first_high_at: float | None = None
+        self.event_started_at: float | None = None
+        self.peak_excess_db = -math.inf
+        self.peak_level_db = -math.inf
+        self.peak_reference_excess_db = -math.inf
+        self.active = False
+        self.last_completed = -math.inf
 
-    def update(self, level_db: float, now: float | None = None) -> tuple[bool, float, float | None]:
+    @property
+    def ready(self) -> bool:
+        return (
+            len(self.history) >= self.warmup_frames
+            and len(self.reference_history) >= self.warmup_frames
+        )
+
+    def update(
+        self,
+        level_db: float,
+        reference_level_db: float,
+        now: float | None = None,
+    ) -> DetectionResult:
         now = time.monotonic() if now is None else now
         baseline = float(np.median(self.history)) if self.history else None
+        reference_baseline = (
+            float(np.median(self.reference_history)) if self.reference_history else None
+        )
         excess = 0.0 if baseline is None else level_db - baseline
-        ready = len(self.history) >= self.warmup_frames
-        if ready and excess >= self.threshold_db:
-            self.consecutive += 1
-        else:
-            self.consecutive = 0
-        triggered = self.consecutive >= 2 and now - self.last_trigger >= self.cooldown
-        if triggered:
-            self.last_trigger = now
-            self.consecutive = 0
-        if not ready or excess < self.threshold_db / 2:
+        reference_excess = (
+            0.0 if reference_baseline is None else reference_level_db - reference_baseline
+        )
+        mad = (
+            float(np.median(np.abs(np.asarray(self.history) - baseline)))
+            if baseline is not None and self.history
+            else 0.0
+        )
+        effective_threshold = max(self.threshold_db, 6.0 * 1.4826 * mad)
+        broadband_limit = max(3.0, self.threshold_db * 0.5)
+        discriminated_rise = excess - max(0.0, reference_excess)
+        high = (
+            self.ready
+            and excess >= effective_threshold
+            and reference_excess < broadband_limit
+            and discriminated_rise >= max(4.0, self.threshold_db * 0.6)
+        )
+
+        if not self.active:
+            if high and now - self.last_completed >= self.cooldown:
+                if self.consecutive == 0:
+                    self.first_high_at = now
+                self.consecutive += 1
+            else:
+                self.consecutive = 0
+                self.first_high_at = None
+            if self.consecutive >= self.start_frames:
+                self.active = True
+                self.event_started_at = self.first_high_at or now
+                self.peak_excess_db = excess
+                self.peak_level_db = level_db
+                self.peak_reference_excess_db = reference_excess
+                self.quiet_frames = 0
+                self.consecutive = 0
+
+        completed = False
+        duration: float | None = None
+        profile: str | None = None
+        peak_excess: float | None = None
+        peak_level: float | None = None
+        if self.active:
+            self.peak_excess_db = max(self.peak_excess_db, excess)
+            self.peak_level_db = max(self.peak_level_db, level_db)
+            self.peak_reference_excess_db = max(
+                self.peak_reference_excess_db, reference_excess
+            )
+            release_level = max(2.0, effective_threshold * 0.35)
+            self.quiet_frames = self.quiet_frames + 1 if excess <= release_level else 0
+            if self.quiet_frames >= self.release_frames:
+                duration = max(0.0, now - (self.event_started_at or now))
+                peak_excess = self.peak_excess_db
+                peak_level = self.peak_level_db
+                profile = "underdense_like" if duration <= 0.7 else "overdense_like"
+                completed = (
+                    0.08 <= duration <= 60.0
+                    and self.peak_reference_excess_db < broadband_limit
+                )
+                if completed:
+                    self.last_completed = now
+                self.active = False
+                self.event_started_at = None
+                self.first_high_at = None
+                self.quiet_frames = 0
+                self.peak_excess_db = -math.inf
+                self.peak_level_db = -math.inf
+                self.peak_reference_excess_db = -math.inf
+
+        if not self.active and (not self.ready or excess < self.threshold_db / 2):
             self.history.append(level_db)
-        return triggered, excess, baseline
+            self.reference_history.append(reference_level_db)
+
+        return DetectionResult(
+            completed=completed,
+            active=self.active,
+            excess_db=excess,
+            baseline_db=baseline,
+            reference_excess_db=reference_excess,
+            effective_threshold_db=effective_threshold,
+            duration_seconds=duration,
+            peak_excess_db=peak_excess,
+            peak_level_db=peak_level,
+            profile=profile,
+        )
 
 
 def settings_from_payload(base: CaptureConfig, payload: dict[str, Any]) -> LiveSettings:
@@ -229,9 +355,11 @@ class LiveMonitor:
         self,
         base_config: CaptureConfig,
         source_factory: Callable[[CaptureConfig], RadioStream] | None = None,
+        source_label: str = "hardware",
     ) -> None:
         self.base_config = base_config.validated()
         self._source_factory = source_factory or RtlPyStream
+        self._source_label = source_label
         self._condition = Condition(RLock())
         self._stop = Event()
         self._thread: Thread | None = None
@@ -246,6 +374,18 @@ class LiveMonitor:
         self._buffer_seconds = 0.0
         self._candidate_count = 0
         self._started_at: str | None = None
+        self._receiver_info: dict[str, Any] = {
+            "connected": False,
+            "display_name": (
+                "Meteor SDR simulated receiver"
+                if source_label == "simulation"
+                else "RTL-SDR not connected"
+            ),
+            "manufacturer": "",
+            "product": "",
+            "serial": "",
+            "driver_name": "",
+        }
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meteor-archive")
 
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -328,6 +468,8 @@ class LiveMonitor:
         settings = self._settings
         config = settings.config if settings else self.base_config
         return {
+            "source": self._source_label,
+            "receiver": dict(self._receiver_info),
             "state": self._state,
             "error": self._error,
             "started_at_utc": self._started_at,
@@ -405,6 +547,21 @@ class LiveMonitor:
             stream = self._source_factory(config)
             with self._condition:
                 self._stream = stream
+                identity_reader = getattr(stream, "identity", None)
+                identity = identity_reader() if callable(identity_reader) else {}
+                self._receiver_info = {
+                    "connected": True,
+                    "display_name": identity.get(
+                        "display_name",
+                        "RTL-SDR receiver"
+                        if self._source_label == "hardware"
+                        else "Meteor SDR simulated receiver",
+                    ),
+                    "manufacturer": identity.get("manufacturer", ""),
+                    "product": identity.get("product", ""),
+                    "serial": identity.get("serial", ""),
+                    "driver_name": identity.get("driver_name", ""),
+                }
                 assert self._settings is not None
                 if self._radio_revision != radio_revision:
                     settings = self._settings
@@ -458,26 +615,27 @@ class LiveMonitor:
                 last_frame_time = frame_time
                 spectrum = analyzer.analyze(block)
                 bin_width = config.sample_rate_hz / analyzer.display_bins
-                target_index = round(
-                    (settings.detection_frequency_hz - config.lower_edge_hz) / bin_width
-                )
-                target_index = max(0, min(analyzer.display_bins - 1, target_index))
-                radius = max(1, round(8_000 / bin_width))
-                low = max(0, target_index - radius)
-                high = min(analyzer.display_bins, target_index + radius + 1)
-                level = float(np.max(spectrum[low:high]))
-                triggered, excess, baseline = detector.update(level)
+                frequencies = config.lower_edge_hz + (
+                    np.arange(analyzer.display_bins) + 0.5
+                ) * bin_width
+                distance = np.abs(frequencies - settings.detection_frequency_hz)
+                target_bins = spectrum[distance <= 80_000]
+                reference_bins = spectrum[distance >= 120_000]
+                if reference_bins.size == 0:
+                    reference_bins = spectrum[distance > 80_000]
+                level = mean_power_db(target_bins)
+                reference_level = mean_power_db(reference_bins)
+                detection = detector.update(level, reference_level)
                 buffer_seconds = ring.byte_count / (config.sample_rate_hz * 2)
                 archived = False
-                if triggered and ring.fill_ratio >= 0.999:
+                if detection.completed and ring.fill_ratio >= 0.999:
                     archived = True
                     self._candidate_count += 1
                     self._writer.submit(
                         self._archive,
                         ring.snapshot(),
                         settings,
-                        level,
-                        excess,
+                        detection,
                     )
                 frame = {
                     "sequence": self._sequence + 1,
@@ -487,11 +645,18 @@ class LiveMonitor:
                     "upper_edge_hz": config.upper_edge_hz,
                     "detection_frequency_hz": settings.detection_frequency_hz,
                     "target_level_db": round(level, 1),
-                    "baseline_db": None if baseline is None else round(baseline, 1),
-                    "excess_db": round(excess, 1),
-                    "threshold_db": settings.threshold_db,
+                    "reference_level_db": round(reference_level, 1),
+                    "reference_excess_db": round(detection.reference_excess_db, 1),
+                    "baseline_db": (
+                        None
+                        if detection.baseline_db is None
+                        else round(detection.baseline_db, 1)
+                    ),
+                    "excess_db": round(detection.excess_db, 1),
+                    "threshold_db": round(detection.effective_threshold_db, 1),
                     "buffer_seconds": round(buffer_seconds, 2),
-                    "detector_ready": len(detector.history) >= detector.warmup_frames,
+                    "detector_ready": detector.ready,
+                    "detector_active": detection.active,
                     "archived": archived,
                 }
                 with self._condition:
@@ -507,6 +672,9 @@ class LiveMonitor:
             with self._condition:
                 self._state = "error"
                 self._error = str(exc)
+                self._receiver_info["connected"] = False
+                if self._source_label == "hardware":
+                    self._receiver_info["display_name"] = "RTL-SDR not connected"
                 self._condition.notify_all()
         finally:
             if stream is not None:
@@ -515,19 +683,24 @@ class LiveMonitor:
             with self._condition:
                 if self._state != "error":
                     self._state = "stopped"
+                self._receiver_info["connected"] = False
                 self._condition.notify_all()
 
     def _archive(
         self,
         data: bytes,
         settings: LiveSettings,
-        level_db: float,
-        excess_db: float,
+        detection: DetectionResult,
     ) -> None:
         event_dir = self._event_dir()
         event_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc)
-        stem = f"meteor_candidate_{now.strftime('%Y%m%dT%H%M%S_%fZ')}_{settings.detection_frequency_hz}Hz"
+        prefix = (
+            "simulation_candidate"
+            if self._source_label == "simulation"
+            else "meteor_candidate"
+        )
+        stem = f"{prefix}_{now.strftime('%Y%m%dT%H%M%S_%fZ')}_{settings.detection_frequency_hz}Hz"
         data_path = event_dir / f"{stem}.cu8"
         metadata_path = event_dir / f"{stem}.cu8.json"
         preview_path = event_dir / f"{stem}.waterfall.png"
@@ -536,7 +709,12 @@ class LiveMonitor:
         temporary_path.replace(data_path)
         preview_path.write_bytes(render_waterfall_png(data))
         metadata = {
-            "classification": "meteor_candidate_unconfirmed",
+            "classification": (
+                "simulated_meteor_candidate"
+                if self._source_label == "simulation"
+                else "meteor_candidate_unconfirmed"
+            ),
+            "radio_source": self._source_label,
             "data_file": data_path.name,
             "preview_file": preview_path.name,
             "triggered_at_utc": now.isoformat(),
@@ -550,9 +728,16 @@ class LiveMonitor:
             "ppm": settings.config.ppm,
             "sample_format": "cu8_interleaved_iq",
             "detector_threshold_db": settings.threshold_db,
-            "trigger_level_db": round(level_db, 2),
-            "trigger_excess_db": round(excess_db, 2),
+            "trigger_level_db": round(detection.peak_level_db or 0.0, 2),
+            "trigger_excess_db": round(detection.peak_excess_db or 0.0, 2),
+            "reference_excess_db": round(detection.reference_excess_db, 2),
+            "echo_duration_seconds": detection.duration_seconds,
+            "echo_profile": detection.profile,
             "sha256": hashlib.sha256(data).hexdigest(),
-            "note": "Automatic candidate only; inspect the waterfall before classifying it as a meteor.",
+            "note": (
+                "Synthetic training event; this data did not come from an antenna."
+                if self._source_label == "simulation"
+                else "Automatic candidate only; inspect the waterfall before classifying it as a meteor."
+            ),
         }
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
