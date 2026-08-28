@@ -52,6 +52,14 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn(".retune-overlay[hidden]", stylesheet)
         self.assertIn(".canvas-empty[hidden]", stylesheet)
 
+        self.connection.request("GET", "/app.js")
+        response = self.connection.getresponse()
+        script = response.read().decode()
+        self.assertEqual(response.status, 200)
+        self.assertIn("queuedBytes<8192", script)
+        self.assertIn("audioNextTime<=audioContext.currentTime+.005", script)
+        self.assertNotIn("Math.max(audioNextTime,audioContext.currentTime+.06)", script)
+
     def test_old_download_api_is_gone(self) -> None:
         self.connection.request("GET", "/api/captures")
         response = self.connection.getresponse()
