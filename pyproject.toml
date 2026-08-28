@@ -1,22 +1,1 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "meteor-scatter-sdr"
-version = "0.4.0"
-description = "A live RTL-SDR spectrum, waterfall, and meteor-scatter candidate recorder"
-readme = "README.md"
-requires-python = ">=3.11"
-license = { text = "MIT" }
-authors = [{ name = "Alex Parsons" }]
-dependencies = ["numpy>=1.26,<3"]
-
-[project.scripts]
-meteor-sdr = "meteor_sdr.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-meteor_sdr = ["web/*.html", "web/*.css", "web/*.js"]
+m«ëˆ§½©buªàºg§¶œ©®ˆÞrÛhšU,j›jÇºà7an{¦Š)ßŠW¨¢ë_ŠW›n·š‘ºÞjG§r‡^v‹­¦ën¦)í¢X§zÊ•éà¶î˜7]yÊy×œ¡×¢ž›­†¥¥Ø¬¦V²¶¬™ë,j¢Šzn¶)éº×â•ç^}«¥µú+²×bžŠ.¶›­¢ëiº×â•ç^}«¥µú+²×hº
