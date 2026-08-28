@@ -9,6 +9,7 @@ import numpy as np
 from meteor_sdr.config import CaptureConfig, ConfigurationError
 from meteor_sdr.live import (
     CandidateDetector,
+    DetectionResult,
     LiveMonitor,
     LiveSettings,
     RollingIqBuffer,
@@ -17,6 +18,7 @@ from meteor_sdr.live import (
     settings_from_payload,
     stream_read_size,
 )
+from meteor_sdr.rtl import SimulatedRadioStream
 
 
 class FakeRadioStream:
@@ -43,6 +45,24 @@ class FakeRadioStream:
 
 
 class LivePipelineTests(unittest.TestCase):
+    def test_simulated_receiver_streams_and_retunes_without_hardware(self) -> None:
+        config = CaptureConfig(sample_rate_hz=250_000)
+        stream = SimulatedRadioStream(config)
+        try:
+            block = stream.read(8192)
+            self.assertEqual(len(block), 8192)
+            self.assertGreater(len(set(block)), 20)
+            stream.tune(
+                CaptureConfig(
+                    center_frequency_hz=100_100_000,
+                    sample_rate_hz=250_000,
+                )
+            )
+            self.assertEqual(len(stream.read(8192)), 8192)
+        finally:
+            stream.close()
+        self.assertEqual(stream.read(8192), b"")
+
     def test_rolling_buffer_keeps_only_newest_bytes(self) -> None:
         ring = RollingIqBuffer(sample_rate_hz=2, seconds=2)
         ring.append(b"12345")
@@ -70,16 +90,31 @@ class LivePipelineTests(unittest.TestCase):
         expected = round((offset_hz + sample_rate / 2) / (sample_rate / 512))
         self.assertLessEqual(abs(peak - expected), 1)
 
-    def test_detector_requires_warmup_and_two_high_frames(self) -> None:
+    def test_detector_requires_a_rise_and_completed_decay(self) -> None:
         detector = CandidateDetector(threshold_db=8, warmup_frames=3, cooldown=10)
         for index in range(3):
-            triggered, _, _ = detector.update(-60, now=float(index))
-            self.assertFalse(triggered)
-        self.assertFalse(detector.update(-50, now=3)[0])
-        triggered, excess, baseline = detector.update(-50, now=4)
-        self.assertTrue(triggered)
-        self.assertEqual(excess, 10)
-        self.assertEqual(baseline, -60)
+            result = detector.update(-60, -70, now=index * 0.04)
+            self.assertFalse(result.completed)
+        self.assertFalse(detector.update(-50, -70, now=0.12).active)
+        result = detector.update(-50, -70, now=0.16)
+        self.assertTrue(result.active)
+        self.assertFalse(result.completed)
+        detector.update(-60, -70, now=0.20)
+        detector.update(-60, -70, now=0.24)
+        result = detector.update(-60, -70, now=0.28)
+        self.assertTrue(result.completed)
+        self.assertEqual(result.peak_excess_db, 10)
+        self.assertEqual(result.baseline_db, -60)
+        self.assertEqual(result.profile, "underdense_like")
+
+    def test_detector_rejects_single_frame_and_broadband_flashes(self) -> None:
+        detector = CandidateDetector(threshold_db=8, warmup_frames=3)
+        for index in range(3):
+            detector.update(-60, -70, now=index * 0.04)
+        self.assertFalse(detector.update(-48, -70, now=0.12).active)
+        self.assertFalse(detector.update(-60, -70, now=0.16).active)
+        self.assertFalse(detector.update(-48, -58, now=0.20).active)
+        self.assertFalse(detector.update(-48, -58, now=0.24).active)
 
     def test_live_settings_validate_target_and_unknown_fields(self) -> None:
         base = CaptureConfig(center_frequency_hz=100_000_000, sample_rate_hz=1_024_000)
@@ -101,7 +136,22 @@ class LivePipelineTests(unittest.TestCase):
             settings = LiveSettings(config, 100_000_000, 8).validated()
             data = bytes([127, 128]) * 4096
             try:
-                monitor._archive(data, settings, -35.0, 10.0)
+                monitor._archive(
+                    data,
+                    settings,
+                    DetectionResult(
+                        completed=True,
+                        active=False,
+                        excess_db=2.0,
+                        baseline_db=-45.0,
+                        reference_excess_db=0.5,
+                        effective_threshold_db=8.0,
+                        duration_seconds=0.24,
+                        peak_excess_db=10.0,
+                        peak_level_db=-35.0,
+                        profile="underdense_like",
+                    ),
+                )
                 metadata_files = list((config.output_dir / "events").glob("*.cu8.json"))
                 self.assertEqual(len(metadata_files), 1)
                 metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
@@ -109,16 +159,17 @@ class LivePipelineTests(unittest.TestCase):
                 self.assertEqual(data_path.read_bytes(), data)
                 self.assertEqual(metadata["classification"], "meteor_candidate_unconfirmed")
                 self.assertEqual(metadata["trigger_excess_db"], 10.0)
+                self.assertEqual(metadata["echo_profile"], "underdense_like")
                 preview_path = metadata_files[0].parent / metadata["preview_file"]
                 self.assertTrue(preview_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
             finally:
                 monitor.close()
 
-    def test_waterfall_preview_is_a_256_pixel_png(self) -> None:
+    def test_waterfall_preview_is_a_512_pixel_png(self) -> None:
         data = bytes([127, 128]) * 8192
         preview = render_waterfall_png(data, height=24)
         self.assertEqual(preview[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(int.from_bytes(preview[16:20], "big"), 256)
+        self.assertEqual(int.from_bytes(preview[16:20], "big"), 512)
         self.assertEqual(int.from_bytes(preview[20:24], "big"), 24)
 
     def test_monitor_publishes_a_frame_from_streamed_iq(self) -> None:
@@ -131,8 +182,12 @@ class LivePipelineTests(unittest.TestCase):
             frame = monitor.wait_for_frame(0, timeout=2)
             self.assertIsNotNone(frame)
             assert frame is not None
-            self.assertEqual(len(frame["spectrum_db"]), 256)
+            self.assertEqual(len(frame["spectrum_db"]), 512)
             self.assertGreater(frame["buffer_seconds"], 0)
+            status = monitor.status()
+            self.assertEqual(status["source"], "hardware")
+            self.assertTrue(status["receiver"]["connected"])
+            self.assertEqual(status["receiver"]["display_name"], "RTL-SDR receiver")
         finally:
             monitor.close()
 
