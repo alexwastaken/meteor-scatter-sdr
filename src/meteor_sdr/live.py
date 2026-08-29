@@ -29,6 +29,8 @@ RETUNE_FLUSH_SECONDS = 0.08
 AUDIO_SAMPLE_RATE_HZ = 32_000
 AUDIO_RF_RATE_HZ = 256_000
 AUDIO_DEEMPHASIS_SECONDS = 75e-6
+AUDIO_LOWPASS_HZ = 12_500
+AUDIO_FILTER_TAPS = 129
 
 
 def stream_read_size(sample_rate_hz: int) -> int:
@@ -63,6 +65,17 @@ class FmAudioDemodulator:
         self.rf_rate_hz = sample_rate_hz / self.rf_decimation
         self.audio_decimation = max(1, round(self.rf_rate_hz / output_rate_hz))
         self.intermediate_audio_rate_hz = self.rf_rate_hz / self.audio_decimation
+        positions = np.arange(AUDIO_FILTER_TAPS) - (AUDIO_FILTER_TAPS - 1) / 2
+        normalized_cutoff = AUDIO_LOWPASS_HZ / self.rf_rate_hz
+        taps = (
+            2.0
+            * normalized_cutoff
+            * np.sinc(2.0 * normalized_cutoff * positions)
+            * np.hamming(AUDIO_FILTER_TAPS)
+        )
+        self._audio_filter_taps = (taps / taps.sum()).astype(np.float32)
+        self._audio_filter_state = np.zeros(AUDIO_FILTER_TAPS - 1, dtype=np.float32)
+        self._audio_decimation_position = 0
         self._mixer_phase = 0.0
         self._previous_iq: complex | None = None
         self._deemphasis = 0.0
@@ -94,15 +107,22 @@ class FmAudioDemodulator:
             )
         self._previous_iq = complex(baseband[-1])
         discriminator = np.angle(baseband[1:] * np.conj(baseband[:-1]))
-        usable_audio = (
-            discriminator.size
-            - discriminator.size % self.audio_decimation
-        )
-        if usable_audio <= 0:
+        if discriminator.size <= 0:
             return b""
-        audio = discriminator[:usable_audio].reshape(
-            -1, self.audio_decimation
-        ).mean(axis=1)
+        filter_input = np.concatenate(
+            (self._audio_filter_state, discriminator.astype(np.float32, copy=False))
+        )
+        filtered_discriminator = np.convolve(
+            filter_input, self._audio_filter_taps, mode="valid"
+        )
+        self._audio_filter_state = filter_input[-(AUDIO_FILTER_TAPS - 1) :]
+        first_output = (-self._audio_decimation_position) % self.audio_decimation
+        audio = filtered_discriminator[first_output :: self.audio_decimation]
+        self._audio_decimation_position = (
+            self._audio_decimation_position + filtered_discriminator.size
+        ) % self.audio_decimation
+        if audio.size <= 0:
+            return b""
 
         if not math.isclose(self.intermediate_audio_rate_hz, self.output_rate_hz):
             output_count = max(
