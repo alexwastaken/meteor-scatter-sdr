@@ -113,6 +113,30 @@ class LivePipelineTests(unittest.TestCase):
         self.assertLess(abs(peak_frequency - 1_000), 40)
         self.assertGreater(float(np.sqrt(np.mean(pcm.astype(float) ** 2))), 1_000)
 
+    def test_fm_audio_removes_the_stereo_pilot_before_downsampling(self) -> None:
+        sample_rate = 250_000
+        sample_count = 125_000
+        time_axis = np.arange(sample_count) / sample_rate
+        instantaneous_frequency = (
+            25_000 * np.sin(2 * np.pi * 1_000 * time_axis)
+            + 8_000 * np.sin(2 * np.pi * 19_000 * time_axis)
+        )
+        phase = np.cumsum(2 * np.pi * instantaneous_frequency / sample_rate)
+        samples = 0.8 * np.exp(1j * phase)
+        interleaved = np.empty(sample_count * 2, dtype=np.uint8)
+        interleaved[0::2] = np.clip(samples.real * 127.5 + 127.5, 0, 255)
+        interleaved[1::2] = np.clip(samples.imag * 127.5 + 127.5, 0, 255)
+
+        demodulator = FmAudioDemodulator(sample_rate)
+        pcm = np.frombuffer(demodulator.process(interleaved.tobytes()), dtype="<i2")
+        stable = pcm[500:].astype(float)
+        spectrum = np.abs(np.fft.rfft(stable * np.hanning(stable.size)))
+        frequencies = np.fft.rfftfreq(stable.size, 1 / 32_000)
+        audio_level = spectrum[np.argmin(np.abs(frequencies - 1_000))]
+        aliased_pilot_level = spectrum[np.argmin(np.abs(frequencies - 13_000))]
+
+        self.assertGreater(audio_level, aliased_pilot_level * 100)
+
     def test_detector_requires_a_rise_and_completed_decay(self) -> None:
         detector = CandidateDetector(threshold_db=8, warmup_frames=3, cooldown=10)
         for index in range(3):
