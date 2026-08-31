@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Condition, Event, RLock, Thread
 from typing import Any, Callable, Protocol
 import hashlib
 import json
 import math
+import shutil
 import struct
 import time
 import zlib
@@ -24,7 +25,8 @@ BUFFER_SECONDS = 30.0
 FFT_SIZE = 4096
 DISPLAY_BINS = 512
 MIN_READ_BYTES = 8_192
-MAX_FRAME_RATE_HZ = 25.0
+DETECTOR_RATE_HZ = 50.0
+DISPLAY_FRAME_RATE_HZ = 12.5
 RETUNE_FLUSH_SECONDS = 0.08
 AUDIO_SAMPLE_RATE_HZ = 32_000
 AUDIO_RF_RATE_HZ = 256_000
@@ -165,6 +167,7 @@ class LiveSettings:
     config: CaptureConfig
     detection_frequency_hz: int
     threshold_db: float = 8.0
+    observation_mode: str = "meteor"
 
     def validated(self) -> "LiveSettings":
         config = self.config.validated()
@@ -172,6 +175,8 @@ class LiveSettings:
             raise ConfigurationError("detection frequency must be inside the displayed span")
         if not math.isfinite(self.threshold_db) or not 3 <= self.threshold_db <= 30:
             raise ConfigurationError("detector threshold must be between 3 and 30 dB")
+        if self.observation_mode not in {"meteor", "radio_check"}:
+            raise ConfigurationError("observation mode must be 'meteor' or 'radio_check'")
         return replace(self, config=config)
 
 
@@ -207,6 +212,10 @@ class RollingIqBuffer:
     def snapshot(self) -> bytes:
         return b"".join(self._chunks)
 
+    def snapshot_chunks(self) -> tuple[bytes, ...]:
+        """Freeze byte references without copying the full RF buffer on the reader."""
+        return tuple(self._chunks)
+
 
 class SpectrumAnalyzer:
     def __init__(self, fft_size: int = FFT_SIZE, display_bins: int = DISPLAY_BINS) -> None:
@@ -240,6 +249,7 @@ def render_waterfall_png(
     iq_bytes: bytes,
     analyzer: SpectrumAnalyzer | None = None,
     height: int = 240,
+    target_fraction: float | None = None,
 ) -> bytes:
     """Render a compact, newest-first waterfall preview without extra packages."""
     analyzer = analyzer or SpectrumAnalyzer()
@@ -263,6 +273,13 @@ def render_waterfall_png(
     lower = np.minimum(len(stops) - 2, scaled.astype(np.int16))
     mix = (scaled - lower)[..., None]
     rgb = (stops[lower] * (1 - mix) + stops[lower + 1] * mix).astype(np.uint8)
+    if target_fraction is not None:
+        marker_x = round(
+            max(0.0, min(1.0, target_fraction)) * (analyzer.display_bins - 1)
+        )
+        for row in range(height):
+            if row % 8 < 4:
+                rgb[row, marker_x] = [73, 215, 255]
     raw = b"".join(b"\x00" + row.tobytes() for row in rgb)
 
     def chunk(kind: bytes, data: bytes) -> bytes:
@@ -292,6 +309,7 @@ class DetectionResult:
     duration_seconds: float | None = None
     peak_excess_db: float | None = None
     peak_level_db: float | None = None
+    peak_reference_excess_db: float | None = None
     profile: str | None = None
 
 
@@ -328,6 +346,13 @@ class CandidateDetector:
         return (
             len(self.history) >= self.warmup_frames
             and len(self.reference_history) >= self.warmup_frames
+        )
+
+    @property
+    def readiness(self) -> float:
+        return min(
+            1.0,
+            min(len(self.history), len(self.reference_history)) / self.warmup_frames,
         )
 
     def update(
@@ -382,6 +407,7 @@ class CandidateDetector:
         profile: str | None = None
         peak_excess: float | None = None
         peak_level: float | None = None
+        peak_reference_excess: float | None = None
         if self.active:
             self.peak_excess_db = max(self.peak_excess_db, excess)
             self.peak_level_db = max(self.peak_level_db, level_db)
@@ -394,6 +420,7 @@ class CandidateDetector:
                 duration = max(0.0, now - (self.event_started_at or now))
                 peak_excess = self.peak_excess_db
                 peak_level = self.peak_level_db
+                peak_reference_excess = self.peak_reference_excess_db
                 profile = "underdense_like" if duration <= 0.7 else "overdense_like"
                 completed = (
                     0.08 <= duration <= 60.0
@@ -423,6 +450,7 @@ class CandidateDetector:
             duration_seconds=duration,
             peak_excess_db=peak_excess,
             peak_level_db=peak_level,
+            peak_reference_excess_db=peak_reference_excess,
             profile=profile,
         )
 
@@ -434,6 +462,7 @@ def settings_from_payload(base: CaptureConfig, payload: dict[str, Any]) -> LiveS
         "gain_db",
         "detection_frequency_hz",
         "threshold_db",
+        "observation_mode",
     }
     unexpected = set(payload) - allowed
     if unexpected:
@@ -455,6 +484,9 @@ def settings_from_payload(base: CaptureConfig, payload: dict[str, Any]) -> LiveS
     threshold = payload.get("threshold_db", 8.0)
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
         raise ConfigurationError("detector threshold must be a number")
+    observation_mode = payload.get("observation_mode", "meteor")
+    if not isinstance(observation_mode, str):
+        raise ConfigurationError("observation_mode must be a string")
 
     config = replace(
         base,
@@ -463,7 +495,12 @@ def settings_from_payload(base: CaptureConfig, payload: dict[str, Any]) -> LiveS
         gain_db=gain,
     ).validated()
     detection = integer("detection_frequency_hz", config.center_frequency_hz)
-    return LiveSettings(config, detection, float(threshold)).validated()
+    return LiveSettings(
+        config,
+        detection,
+        float(threshold),
+        observation_mode,
+    ).validated()
 
 
 class LiveMonitor:
@@ -608,6 +645,9 @@ class LiveMonitor:
                     settings.detection_frequency_hz if settings else config.center_frequency_hz
                 ),
                 "threshold_db": settings.threshold_db if settings else 8.0,
+                "observation_mode": (
+                    settings.observation_mode if settings else "meteor"
+                ),
                 "lower_edge_hz": config.lower_edge_hz,
                 "upper_edge_hz": config.upper_edge_hz,
             },
@@ -654,7 +694,7 @@ class LiveMonitor:
             self._audio_chunk = pcm
             self._condition.notify_all()
 
-    def events(self) -> list[dict[str, Any]]:
+    def events(self, limit_per_source: int = 25) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         event_dir = self._event_dir()
         if not event_dir.exists():
@@ -672,7 +712,27 @@ class LiveMonitor:
             except (OSError, ValueError, KeyError, TypeError):
                 continue
         result.sort(key=lambda item: item.get("triggered_at_utc", ""), reverse=True)
-        return result
+        limit_per_source = max(1, limit_per_source)
+        physical = [item for item in result if item.get("radio_source") != "simulation"]
+        training = [item for item in result if item.get("radio_source") == "simulation"]
+        recent = physical[:limit_per_source] + training[:limit_per_source]
+        recent.sort(key=lambda item: item.get("triggered_at_utc", ""), reverse=True)
+        return recent
+
+    def storage_status(self) -> dict[str, int]:
+        event_dir = self._event_dir()
+        try:
+            event_dir.mkdir(parents=True, exist_ok=True)
+            raw_files = list(event_dir.glob("*.cu8"))
+            used_bytes = sum(path.stat().st_size for path in raw_files)
+            free_bytes = shutil.disk_usage(event_dir).free
+        except OSError:
+            return {"event_count": 0, "used_bytes": 0, "free_bytes": 0}
+        return {
+            "event_count": len(raw_files),
+            "used_bytes": used_bytes,
+            "free_bytes": free_bytes,
+        }
 
     def _event_dir(self) -> Path:
         return self.base_config.output_dir.expanduser() / "events"
@@ -739,7 +799,8 @@ class LiveMonitor:
                     )
                 self._state = "running"
                 self._condition.notify_all()
-            last_frame_time = 0.0
+            last_analysis_time = 0.0
+            last_publish_time = 0.0
             while not self._stop.is_set():
                 block = stream.read(read_size)
                 if block is None:
@@ -764,7 +825,8 @@ class LiveMonitor:
                         discard_bytes = round(
                             config.sample_rate_hz * 2 * RETUNE_FLUSH_SECONDS
                         )
-                        last_frame_time = 0.0
+                        last_analysis_time = 0.0
+                        last_publish_time = 0.0
                     elif self._settings_revision != settings_revision:
                         assert self._settings is not None
                         settings = self._settings
@@ -784,9 +846,9 @@ class LiveMonitor:
                 if len(block) < FFT_SIZE * 2:
                     continue
                 frame_time = time.monotonic()
-                if frame_time - last_frame_time < 1 / MAX_FRAME_RATE_HZ:
+                if frame_time - last_analysis_time < 1 / DETECTOR_RATE_HZ:
                     continue
-                last_frame_time = frame_time
+                last_analysis_time = frame_time
                 spectrum = analyzer.analyze(block)
                 bin_width = config.sample_rate_hz / analyzer.display_bins
                 frequencies = config.lower_edge_hz + (
@@ -799,18 +861,38 @@ class LiveMonitor:
                     reference_bins = spectrum[distance > 80_000]
                 level = mean_power_db(target_bins)
                 reference_level = mean_power_db(reference_bins)
-                detection = detector.update(level, reference_level)
+                if settings.observation_mode == "meteor":
+                    detection = detector.update(level, reference_level)
+                else:
+                    detection = DetectionResult(
+                        completed=False,
+                        active=False,
+                        excess_db=0.0,
+                        baseline_db=None,
+                        reference_excess_db=0.0,
+                        effective_threshold_db=settings.threshold_db,
+                    )
                 buffer_seconds = ring.byte_count / (config.sample_rate_hz * 2)
                 archived = False
-                if detection.completed and ring.fill_ratio >= 0.999:
+                if (
+                    settings.observation_mode == "meteor"
+                    and detection.completed
+                    and ring.fill_ratio >= 0.999
+                ):
                     archived = True
                     self._candidate_count += 1
                     self._writer.submit(
                         self._archive,
-                        ring.snapshot(),
+                        ring.snapshot_chunks(),
                         settings,
                         detection,
                     )
+                if (
+                    not archived
+                    and frame_time - last_publish_time < 1 / DISPLAY_FRAME_RATE_HZ
+                ):
+                    continue
+                last_publish_time = frame_time
                 frame = {
                     "sequence": self._sequence + 1,
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -830,7 +912,9 @@ class LiveMonitor:
                     "threshold_db": round(detection.effective_threshold_db, 1),
                     "buffer_seconds": round(buffer_seconds, 2),
                     "detector_ready": detector.ready,
+                    "detector_readiness": round(detector.readiness, 3),
                     "detector_active": detection.active,
+                    "observation_mode": settings.observation_mode,
                     "archived": archived,
                 }
                 with self._condition:
@@ -862,10 +946,12 @@ class LiveMonitor:
 
     def _archive(
         self,
-        data: bytes,
+        data: bytes | tuple[bytes, ...],
         settings: LiveSettings,
         detection: DetectionResult,
     ) -> None:
+        if not isinstance(data, bytes):
+            data = b"".join(data)
         event_dir = self._event_dir()
         event_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc)
@@ -881,7 +967,14 @@ class LiveMonitor:
         temporary_path = event_dir / f".{stem}.part"
         temporary_path.write_bytes(data)
         temporary_path.replace(data_path)
-        preview_path.write_bytes(render_waterfall_png(data))
+        target_fraction = (
+            settings.detection_frequency_hz - settings.config.lower_edge_hz
+        ) / settings.config.sample_rate_hz
+        preview_path.write_bytes(
+            render_waterfall_png(data, target_fraction=target_fraction)
+        )
+        with self._condition:
+            receiver = dict(self._receiver_info)
         metadata = {
             "classification": (
                 "simulated_meteor_candidate"
@@ -892,6 +985,10 @@ class LiveMonitor:
             "data_file": data_path.name,
             "preview_file": preview_path.name,
             "triggered_at_utc": now.isoformat(),
+            "echo_end_utc": now.isoformat(),
+            "echo_start_utc": (
+                now - timedelta(seconds=detection.duration_seconds or 0.0)
+            ).isoformat(),
             "buffer_duration_seconds": len(data) / (settings.config.sample_rate_hz * 2),
             "center_frequency_hz": settings.config.center_frequency_hz,
             "sample_rate_hz": settings.config.sample_rate_hz,
@@ -901,12 +998,38 @@ class LiveMonitor:
             "gain_db": "auto" if settings.config.gain_db is None else settings.config.gain_db,
             "ppm": settings.config.ppm,
             "sample_format": "cu8_interleaved_iq",
+            "receiver": receiver,
             "detector_threshold_db": settings.threshold_db,
+            "observation_mode": settings.observation_mode,
             "trigger_level_db": round(detection.peak_level_db or 0.0, 2),
             "trigger_excess_db": round(detection.peak_excess_db or 0.0, 2),
-            "reference_excess_db": round(detection.reference_excess_db, 2),
+            "reference_excess_db": round(
+                detection.peak_reference_excess_db
+                if detection.peak_reference_excess_db is not None
+                else detection.reference_excess_db,
+                2,
+            ),
             "echo_duration_seconds": detection.duration_seconds,
             "echo_profile": detection.profile,
+            "observer": {
+                "location_name": "Carmel Valley, San Diego, California",
+                "antenna_type": "Yagi",
+                "polarization": "horizontal",
+                "antenna_gain_db": 7.0,
+            },
+            "suggested_target": (
+                {
+                    "call_sign": "KZJH",
+                    "frequency_hz": 95_300_000,
+                    "transmitter_location": "Jackson, Wyoming",
+                    "licensed_erp_kw": 100.0,
+                    "approximate_distance_km": 1298,
+                    "approximate_bearing_true_degrees": 24,
+                    "status": "field_test_required",
+                }
+                if settings.detection_frequency_hz == 95_300_000
+                else None
+            ),
             "sha256": hashlib.sha256(data).hexdigest(),
             "note": (
                 "Synthetic training event; this data did not come from an antenna."

@@ -1,40 +1,54 @@
-# Meteor Scatter SDR
+# Meteor Echo Station
 
-A local live spectrum, waterfall, and meteor-scatter candidate recorder for a
-Nooelec NESDR SMArt v5 and Raspberry Pi 4. The browser is a display only: radio
-samples stay on the Pi.
+A receive-only, meteor-scatter observation app for a Nooelec NESDR SMArt v5,
+a horizontal FM-band Yagi, a Mac, or a Raspberry Pi 4. The app keeps radio data
+on the computer running it.
+
+It detects **unconfirmed meteor-echo candidates**, not meteorite impacts. A
+distant terrestrial FM broadcast may be reflected briefly by the ionized trail
+created when a meteoroid ablates high in the atmosphere. One receiver cannot
+locate a meteorite, reconstruct a trajectory, or prove that every transient was
+a meteor.
 
 ## What this version does
 
-- streams unsigned 8-bit I/Q directly from USB through the maintained `pyrtlsdr` module
-- starts a detailed 512-bin live spectrum and waterfall automatically
-- animates the trace smoothly while limiting Raspberry Pi and browser workload
-- provides fixed ±200 kHz, exact-frequency, span, preset, and watch buttons;
-  the plots themselves are view-only
-- demodulates live mono FM audio for the watched frequency after you press
-  `Enable audio` (browser autoplay rules require the click)
-- holds exactly the newest 30 seconds of raw I/Q in RAM
-- automatically overwrites older non-event samples instead of filling the disk
-- archives the newest 30 seconds as `.cu8`, JSON, and a waterfall PNG only after
-  a multi-frame channel rise has decayed and passed a broadband-RFI check
+- Opens the physical Nooelec receiver directly through `pyrtlsdr` and shows its
+  model and serial number.
+- Uses a meteor-only observation profile instead of a general SDR tuning deck.
+- Samples the detector internally at up to 50 analyses per second while limiting
+  the browser waterfall to 12.5 updates per second.
+- Makes a 30-second echo-power timeline the primary scientific display and uses
+  the waterfall as supporting frequency-versus-time evidence.
+- Keeps exactly the newest 30 seconds of unsigned 8-bit I/Q in RAM.
+- Saves raw `.cu8`, JSON metadata, and a waterfall preview only after a
+  multi-frame rise has decayed and passed a surrounding-band interference test.
+- Stores receiver, antenna, observer, target, duration, rise, and integrity
+  metadata with new candidates.
+- Uses a fixed 28 dB tuner gain so AGC jumps cannot resemble meteor echoes.
+- Separates the local-FM audio check into a no-visual mode that disables meteor
+  detection and candidate saving, then restores the meteor profile automatically.
+- Keeps simulated training candidates visually separate from physical RF data.
 
-An automatic save is **not proof of a meteor**. Local interference, aircraft,
-tropospheric propagation, and transmitter changes can all produce candidates.
+Automatic candidates are never labeled “confirmed meteor.” Aircraft,
+electrical noise, tropospheric propagation, direct station reception, and
+receiver overload can all produce false positives.
 
 ## Hardware
 
-- Raspberry Pi 4 Model B with 4 GB RAM
+- Raspberry Pi 4 Model B with 4 GB RAM, or a Mac for initial setup
 - Nooelec NESDR SMArt v5
-- 87.5–108 MHz Yagi antenna
+- 87.5–108 MHz Yagi antenna, mounted with horizontal elements
 - 75-ohm coax with F-male connector
 - F-female to SMA-male adapter at the SDR end
 
-The antenna is 75 ohms and the SDR input is 50 ohms. That mismatch is acceptable
-for this receiving experiment. Never connect the receiver to a transmitter.
+The antenna is 75 ohms and the SDR input is 50 ohms. That modest mismatch is
+acceptable for this receiving experiment. The RTL-SDR is receive-only; never
+connect it to a transmitter.
 
-## Install or update on Raspberry Pi OS
+## Install or update
 
-Use a current 64-bit Raspberry Pi OS. For a first installation over HTTPS:
+Use a current 64-bit Raspberry Pi OS. For a first Raspberry Pi installation over
+HTTPS:
 
 ```bash
 sudo apt update
@@ -47,7 +61,7 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-For an existing checkout:
+For an existing checkout on the Pi or Mac:
 
 ```bash
 cd meteor-scatter-sdr
@@ -56,18 +70,13 @@ git pull
 python -m pip install -e .
 ```
 
-The last command installs NumPy, which converts I/Q time samples into the
-frequency spectrum shown by the app.
-
-## Check the receiver
-
-Plug the SDR into a Pi USB port, connect the antenna, and run:
+Check the physical receiver:
 
 ```bash
 meteor-sdr doctor
 ```
 
-If a kernel driver has claimed the device, create
+On Raspberry Pi OS, if a TV kernel driver has claimed the dongle, create
 `/etc/modprobe.d/blacklist-rtl-sdr.conf` containing:
 
 ```text
@@ -78,61 +87,97 @@ blacklist rtl2830
 
 Reboot and run `meteor-sdr doctor` again.
 
-## Start the live application
-
-To explore the complete interface before the USB receiver is available, start
-the synthetic RF source:
-
-```bash
-meteor-sdr serve --demo --port 8788
-```
-
-Demo mode drives the real spectrum, waterfall, tuning controls, rolling buffer,
-and detector with repeatable noise, carriers, and recurring meteor-like pings.
-The top-right indicator reads `SIMULATION LIVE`, so simulated samples cannot be
-mistaken for antenna data.
-
-On the Pi desktop:
+## Start the application
 
 ```bash
 meteor-sdr serve
 ```
 
-This opens `http://127.0.0.1:8787`. To view it from a Mac on the same trusted
-network:
+Open `http://127.0.0.1:8787`. For a safe synthetic training session without an
+SDR:
+
+```bash
+meteor-sdr serve --demo --port 8788
+```
+
+To view a Raspberry Pi from a Mac on the same trusted network:
 
 ```bash
 meteor-sdr serve --host 0.0.0.0 --no-browser
 ```
 
-Then open `http://raspberrypi.local:8787` on the Mac. There is no sign-in screen,
-so do not expose this port to the public internet.
+Then open `http://raspberrypi.local:8787`. The dashboard has no authentication,
+so do not expose it to the public internet.
 
-The receiver starts automatically with `meteor-sdr serve`. The detector first
-learns a short baseline; saving is enabled after both the baseline and
-30-second buffer are ready.
+## Carmel Valley suggested profile
 
-The spectrum and waterfall are view-only. Tune with the fixed ±200 kHz buttons,
-type an exact center frequency, use the Carmel Valley research-target button,
-or change the span between 0.250, 1.024, and 2.048 MHz. `Watch center` moves the
-detector to the receiver's center without retuning. Live audio follows that
-watch frequency; press `Enable audio` again to turn it off.
+The built-in starting profile is intentionally presented as a **field-test
+candidate**, not a guaranteed meteor channel:
 
-For ordinary broadcast listening, select **FM audio · 250 kHz**. This keeps one
-approximately 200 kHz-wide US FM channel in the receiver while excluding most
-adjacent-channel spectrum. The **Local FM · 94.9** preset selects that span and
-station together for a quick audio check. The **Meteor · 98.5** preset returns
-to the 1.024 MHz span needed by the candidate detector's surrounding-band RFI
-comparison.
-Retuning deliberately clears and refills the 30-second memory so samples from
-different frequency windows are never mixed; moving only the watch line does
-not clear it. Frequency, span, and gain commands are applied to the existing
-radio stream, so normal tuning no longer stops and relaunches the receiver.
-The direct USB binding removes the extra TCP process and its queue from the live
-waterfall path.
+- Watched channel: **95.3 MHz**
+- Intended transmitter: **KZJH, Jackson, Wyoming**
+- Licensed ERP: **100 kW, nondirectional**
+- Approximate distance: **1,298 km**
+- Approximate true bearing from Carmel Valley: **024°**
+- Antenna: horizontal elements, Yagi boom pointed north-northeast
+- Capture window: **512 kHz**, centered at **95.460 MHz**
+- Fixed tuner gain: **28 dB**
 
-At the recommended 1.024 MS/s setting, the RAM ring is about 61.4 MB and each
-saved candidate is about 61.4 MB. Candidate files are stored under:
+The offset center keeps the 95.3 MHz target away from the RTL-SDR center/DC
+artifact. The 512 kHz window is narrow enough to reduce unrelated FM activity
+while retaining surrounding spectrum for broadband-interference rejection. At
+this rate, the 30-second memory and each raw candidate are about 30.7 MB.
+
+The main known complication is KLLY on 95.3 MHz near Oildale, California,
+approximately 324 km away. Before leaving the station armed, use the receiver
+audio check and observe the channel. If continuous programming or persistent
+reception is present at the actual antenna heading, 95.3 MHz is unsuitable and
+another distant, normally absent transmitter must be selected.
+
+The former 98.5 MHz default was removed because licensed transmitters in
+Cathedral City and Las Vegas are close enough to increase direct and
+tropospheric contamination risk.
+
+## Using the meteor workflow
+
+1. Connect the receiver and horizontal Yagi.
+2. Aim the Yagi toward the candidate transmitter bearing.
+3. Select **Calibrate meteor target**. This clears mixed-frequency samples,
+   learns a new background, and refills the 30-second RAM memory.
+4. Wait for the detector state to reach **Armed**.
+5. Leave the station running. Recent unconfirmed candidates appear
+   automatically; there is no manual refresh or download workflow.
+
+Sensitivity presets are meteor-specific:
+
+- **Strict:** 10 dB minimum rise; fewer false alarms.
+- **Balanced:** 8 dB; default.
+- **Sensitive:** 6 dB; more weak candidates and more review work.
+
+Changing sensitivity or target frequency deliberately restarts background
+learning and the evidence memory.
+
+The dashed **watch marker** is a screen overlay, not a transmitted or received
+signal. The muted **receiver center** marker identifies where a stationary
+RTL-SDR center artifact may appear.
+
+## Receiver audio check
+
+Open the collapsed **Receiver audio check** section and select **Play local FM
+94.9**. This is only a hardware test:
+
+- no spectrum or waterfall is shown for the audio check;
+- meteor detection and candidate saving are disabled;
+- browser audio uses a filtered mono-FM decoder;
+- stopping the check restores 95.3 MHz, the offset meteor center, detector
+  calibration, and the 30-second memory.
+
+Audio is not the scientific meteor record. Raw I/Q, the derived echo-power
+profile, metadata, and waterfall evidence are the useful observation products.
+
+## Candidate evidence
+
+Candidate files are stored under:
 
 ```text
 captures/events/
@@ -141,57 +186,36 @@ captures/events/
   meteor_candidate_....waterfall.png
 ```
 
-Stopping monitoring discards the current unsaved ring. Archived candidates are
-kept until you deliberately remove them.
+The rolling RAM memory overwrites older unsaved samples automatically. Saved
+candidates remain until deliberately removed; the dashboard reports archive
+size and free disk space but never deletes evidence automatically.
 
-## Important tuning limitation
+Candidate labels:
 
-The RTL-SDR cannot display all 20.5 MHz of the FM broadcast band at once. The
-recommended 1.024 MS/s setting shows only a 1.024 MHz window around the center
-frequency. Meteor-scatter observing works best when the watched frequency is a
-specific distant transmitter that is normally absent at your location, not an
-arbitrary busy local FM station.
+- **Short-trail candidate / underdense-like:** fast rise and decay, often only
+  a fraction of a second.
+- **Long-trail candidate / overdense-like:** lasts seconds or longer and may
+  fade irregularly.
+- **Likely interference:** repeating spikes, continuous reception, or much of
+  the monitored spectrum rising together.
 
-For the current Carmel Valley setup, start with **98.5 MHz** and point the Yagi
-roughly east-northeast. The intended test transmitter is KRFM in Show Low,
-Arizona, roughly 690 km away. A local SDR survey found 98.5 MHz materially
-quieter than the other researched high-power targets, 100.5 MHz near Sacramento
-and 106.9 MHz in San Francisco. This is a test target rather than guaranteed
-station attribution: co-channel transmitters and antenna direction matter, so
-re-run a local survey after moving the antenna.
+The JSON SHA-256 hash allows the raw file’s integrity to be checked later.
+`cu8` is native RTL-SDR data: one unsigned I byte followed by one unsigned Q
+byte, both centered near 127.5.
 
-## Reading the display
+## Research basis
 
-The spectrum is the current signal strength from low frequency on the left to
-high frequency on the right. The waterfall repeats those spectra over time:
-the newest row is at the top and older rows move downward.
+- [NASA meteor terminology](https://science.nasa.gov/solar-system/meteors-meteorites/facts/)
+- [International Meteor Organization radio-observation introduction](https://www.imo.net/observations/methods/radio-observation/intro/)
+- [IMO practical receiver and transmitter guidance](https://www.imo.net/observations/methods/radio-observation/practical/)
+- [IMO meteor-reflection signatures](https://www.imo.net/observations/methods/radio-observation/reflection/)
+- [BRAMS annotated meteor and interference spectrograms](https://brams.aeronomie.be/theory/spectrograms)
+- [FCC KZJH record](https://transition.fcc.gov/fcc-bin/fmq?facid=65279)
+- [FCC KLLY record](https://transition.fcc.gov/fcc-bin/fmq?facid=7709)
 
-- A possible **underdense meteor echo** is a thin, bright, short vertical dash at
-  or near the watched frequency, often less than a second long.
-- A possible **overdense echo** is brighter and lasts longer, often with an
-  irregular, curved, split, or slowly fading shape.
-- A full-width horizontal flash is broadband interference. An always-present
-  line, regularly repeating pattern, or activity across many frequencies is
-  also less likely to be a meteor.
-
-The detector learns robust median baselines for the watched FM channel and for
-the surrounding spectrum. It requires at least two elevated frames, waits for
-three frames near baseline, rejects a simultaneous surrounding-band rise, and
-records the peak, duration, and `underdense_like` or `overdense_like` profile in
-JSON. Use the saved PNG for a quick visual review. The matching 30-second `.cu8`
-file remains the full-fidelity source and contains the entire displayed span.
-
-## Raw capture compatibility
-
-The original one-shot command remains available for controlled experiments:
-
-```bash
-meteor-sdr capture --center-frequency 100M --duration 10
-```
-
-`cu8` is the native `rtl_sdr` format. Each complex sample is two bytes: unsigned
-I followed by unsigned Q, both centered near 127.5. Convert a byte `x` to an
-approximately normalized component with `(x - 127.5) / 127.5`.
+Distances and bearings are calculated from FCC transmitter coordinates and are
+approximate. Actual reception at the installed antenna remains the deciding
+test.
 
 ## Run tests
 
@@ -201,5 +225,5 @@ Tests do not require SDR hardware:
 python -m unittest discover -s tests -v
 ```
 
-Raw capture and candidate files are excluded from Git because they become large
-quickly.
+Raw captures and candidate files are excluded from Git because they become
+large quickly.

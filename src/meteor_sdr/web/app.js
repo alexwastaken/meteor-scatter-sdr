@@ -1,52 +1,801 @@
-const $=selector=>document.querySelector(selector);
-const elements={center:$("#center-frequency"),sampleRate:$("#sample-rate"),gain:$("#gain"),detection:$("#detection-frequency"),threshold:$("#threshold"),retry:$("#retry-button"),tuneDown:$("#tune-down"),tuneUp:$("#tune-up"),watchCenter:$("#watch-center"),audioButton:$("#audio-button"),audioNote:$("#audio-note"),targetPresets:[...document.querySelectorAll("[data-frequency]")],spanButtons:[...document.querySelectorAll("[data-span]")],connection:$("#connection"),connectionLabel:$("#connection-label"),receiverName:$("#receiver-name"),receiverDetail:$("#receiver-detail"),sourceBanner:$("#source-banner"),sourceTitle:$("#source-title"),sourceDetail:$("#source-detail"),bufferValue:$("#buffer-value"),bufferMeter:$("#buffer-meter"),headerCenter:$("#header-center"),frameRate:$("#frame-rate"),spanNote:$("#span-note"),low:$("#low-frequency"),quarter:$("#quarter-frequency"),axisCenter:$("#axis-center"),threeQuarter:$("#three-quarter-frequency"),high:$("#high-frequency"),excess:$("#excess-value"),detectorState:$("#detector-state"),memoryState:$("#memory-state"),message:$("#message"),spectrum:$("#spectrum"),waterfall:$("#waterfall"),spectrumEmpty:$("#spectrum-empty"),targetLine:$("#target-line"),retuneOverlay:$("#retune-overlay"),retuneFrequency:$("#retune-frequency"),events:$("#event-list"),eventPath:$("#event-path"),refresh:$("#refresh-button")};
+const $ = (selector) => document.querySelector(selector);
 
-let monitorState="stopped";let latestFrame=null;let pendingFrame=null;let targetSpectrum=null;let displaySpectrum=null;let waterfallStarted=false;let renderedSequence=0;let frameCounter=0;let frameWindow=performance.now();let lastSpectrumDraw=0;let tuningCenter=null;let retuneBusy=false;let queuedRetune=null;let hardwareRetryBusy=false;let lastHardwareRetry=0;let audioEnabled=false;let audioContext=null;let audioGainNode=null;let audioAbort=null;let audioNextTime=0;
+const METEOR_SPAN_HZ = 512_000;
+const METEOR_CENTER_OFFSET_HZ = 160_000;
+const RADIO_CHECK_FREQUENCY_HZ = 94_900_000;
+const RADIO_CHECK_SPAN_HZ = 250_000;
+const FM_LOW_HZ = 87_500_000;
+const FM_HIGH_HZ = 108_000_000;
+const POWER_WINDOW_MS = 30_000;
 
-async function request(url,options={}){const response=await fetch(url,options);const payload=await response.json();if(!response.ok)throw new Error(payload.error||`Request failed (${response.status})`);return payload}
-function formatDate(value){return new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit"}).format(new Date(value))}
-function formatBytes(bytes){return `${(bytes/1024/1024).toFixed(1)} MiB`}
-function mhz(value,digits=3){return (value/1e6).toFixed(digits)}
-function frequency(value){return `${mhz(value)} MHz`}
-function showMessage(text,error=false){elements.message.hidden=false;elements.message.textContent=text;elements.message.classList.toggle("error",error)}
-function clearMessage(){elements.message.hidden=true;elements.message.textContent="";elements.message.classList.remove("error")}
-function clampCenter(center,span){return Math.max(87_500_000+span/2,Math.min(108_000_000-span/2,center))}
+const elements = {
+  connection: $("#connection"),
+  connectionLabel: $("#connection-label"),
+  receiverName: $("#receiver-name"),
+  receiverDetail: $("#receiver-detail"),
+  sourceBanner: $("#source-banner"),
+  sourceTitle: $("#source-title"),
+  sourceDetail: $("#source-detail"),
+  bufferValue: $("#buffer-value"),
+  bufferMeter: $("#buffer-meter"),
+  detectorState: $("#detector-state"),
+  detectorDetail: $("#detector-detail"),
+  headerTarget: $("#header-target"),
+  excess: $("#excess-value"),
+  thresholdValue: $("#threshold-value"),
+  candidateCount: $("#candidate-count"),
+  meteorFrequency: $("#meteor-frequency"),
+  sampleRate: $("#sample-rate"),
+  gain: $("#gain"),
+  detection: $("#detection-frequency"),
+  threshold: $("#threshold"),
+  sensitivityButtons: [...document.querySelectorAll("[data-threshold]")],
+  calibrate: $("#calibrate-button"),
+  watch: $("#watch-button"),
+  retry: $("#retry-button"),
+  message: $("#message"),
+  power: $("#power-chart"),
+  powerThresholdLabel: $("#power-threshold-label"),
+  waterfall: $("#waterfall"),
+  waterfallWrap: $("#waterfall-wrap"),
+  watchMarker: $("#watch-marker"),
+  centerMarker: $("#center-marker"),
+  canvasEmpty: $("#canvas-empty"),
+  canvasSummary: $("#canvas-summary"),
+  modeOverlay: $("#mode-overlay"),
+  retuneOverlay: $("#retune-overlay"),
+  retuneFrequency: $("#retune-frequency"),
+  low: $("#low-frequency"),
+  targetAxis: $("#axis-target"),
+  high: $("#high-frequency"),
+  events: $("#event-list"),
+  storageUsed: $("#storage-used"),
+  storageDetail: $("#storage-detail"),
+  radioCheck: $("#radio-check"),
+  audioButton: $("#audio-button"),
+  audioNote: $("#audio-note"),
+  tooltips: [...document.querySelectorAll(".info-trigger")],
+};
 
-function currentWindow(center=Number(elements.center.value)*1e6,span=Number(elements.sampleRate.value)){return{center,span,low:center-span/2,high:center+span/2}}
-function updateAxes(center=Number(elements.center.value)*1e6,span=Number(elements.sampleRate.value)){const view=currentWindow(center,span);elements.headerCenter.textContent=mhz(view.center);elements.spanNote.textContent=`WINDOW ${mhz(view.low)}—${mhz(view.high)} MHz`;elements.low.textContent=frequency(view.low);elements.quarter.textContent=mhz(view.low+view.span*.25);elements.axisCenter.textContent=frequency(view.center);elements.threeQuarter.textContent=mhz(view.low+view.span*.75);elements.high.textContent=frequency(view.high);return view}
-function buildPayload(){return{center_frequency_hz:Math.round(Number(elements.center.value)*1e6),sample_rate_hz:Number(elements.sampleRate.value),gain_db:elements.gain.value==="auto"?"auto":Number(elements.gain.value),detection_frequency_hz:Math.round(Number(elements.detection.value)*1e6),threshold_db:Number(elements.threshold.value)}}
+let currentStatus = null;
+let monitorState = "stopped";
+let pendingFrame = null;
+let renderedSequence = 0;
+let radioCheckActive = false;
+let hardwareRetryBusy = false;
+let lastHardwareRetry = 0;
+let waterfallStarted = false;
+let waterfallRow = null;
+let powerHistory = [];
+let audioEnabled = false;
+let audioContext = null;
+let audioGainNode = null;
+let audioAbort = null;
+let audioNextTime = 0;
 
-function setActiveSpan(){elements.spanButtons.forEach(button=>button.classList.toggle("active",Number(button.dataset.span)===Number(elements.sampleRate.value)));if(elements.audioNote)updateAudioUi()}
-function applyReceiverStatus(status){const receiver=status.receiver||{connected:false,display_name:"RTL-SDR not connected"};const demo=status.source==="simulation";const physicalConnected=!demo&&receiver.connected;elements.connection.classList.toggle("live",physicalConnected);elements.connection.classList.toggle("error",!demo&&status.state==="error");elements.sourceBanner.classList.toggle("demo",demo);elements.sourceBanner.classList.toggle("connected",physicalConnected);elements.sourceBanner.classList.toggle("disconnected",!demo&&!physicalConnected);if(demo){elements.connectionLabel.textContent="DEMO DATA · NO SDR";elements.receiverName.textContent="No physical SDR connected";elements.receiverDetail.textContent="SYNTHETIC DATA SOURCE";elements.sourceTitle.textContent="DEMO MODE — NO PHYSICAL SDR";elements.sourceDetail.textContent="This waterfall is generated data, not radio data from your antenna."}else if(physicalConnected){const serial=receiver.serial?` · SERIAL ${receiver.serial}`:"";elements.connectionLabel.textContent="PHYSICAL SDR CONNECTED";elements.receiverName.textContent=receiver.display_name||"RTL-SDR receiver";elements.receiverDetail.textContent=`CONNECTED${serial}`;elements.sourceTitle.textContent="PHYSICAL SDR CONNECTED";elements.sourceDetail.textContent=`${receiver.display_name||"RTL-SDR receiver"}${serial}`;}else{elements.connectionLabel.textContent=status.state==="starting"?"CHECKING USB":"SDR NOT CONNECTED";elements.receiverName.textContent="RTL-SDR not connected";elements.receiverDetail.textContent="NO USB RECEIVER OPEN";elements.sourceTitle.textContent=status.state==="starting"?"CHECKING FOR PHYSICAL SDR":"NO PHYSICAL SDR CONNECTED";elements.sourceDetail.textContent="Connect the Nooelec receiver, then start hardware mode."}elements.receiverName.title=elements.receiverName.textContent}
-function applyStatus(status){monitorState=status.state;const live=status.state==="running"||status.state==="starting";elements.retry.hidden=live;elements.audioButton.disabled=!live;applyReceiverStatus(status);elements.bufferValue.textContent=`${status.buffer_seconds.toFixed(1)} s`;elements.bufferMeter.style.width=`${Math.min(100,status.buffer_seconds/30*100)}%`;elements.memoryState.textContent=status.buffer_seconds>=29.9?"ARMED":status.buffer_seconds>0?"FILLING":"EMPTY";if(!latestFrame&&status.settings){elements.center.value=mhz(status.settings.center_frequency_hz);elements.sampleRate.value=String(status.settings.sample_rate_hz);elements.detection.value=mhz(status.settings.detection_frequency_hz);elements.threshold.value=String(status.settings.threshold_db);setActiveSpan();updateAxes()}if(!live&&audioEnabled)stopAudio();updateAudioUi();if(status.event_directory)elements.eventPath.textContent=`WATERFALL PREVIEWS + RAW I/Q: ${status.event_directory}`;if(status.error)showMessage(status.error,true)}
+function mhz(value, digits = 3) {
+  return (Number(value) / 1e6).toFixed(digits);
+}
 
-function fitCanvas(canvas){const rect=canvas.getBoundingClientRect();const maximumWidth=1280;const width=Math.max(1,Math.round(Math.min(rect.width,maximumWidth)));const height=Math.max(1,Math.round(rect.height));if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;return true}return false}
-function tracePath(ctx,values,width,height,point){ctx.beginPath();values.forEach((value,index)=>{const x=index/(values.length-1)*width;const y=point(value);if(index===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)})}
-function drawSpectrum(frame){fitCanvas(elements.spectrum);const canvas=elements.spectrum;const ctx=canvas.getContext("2d");const width=canvas.width;const height=canvas.height;const values=displaySpectrum||frame.spectrum_db;const floor=-95;const ceiling=-10;const point=value=>height-(Math.max(floor,Math.min(ceiling,value))-floor)/(ceiling-floor)*height;ctx.fillStyle="#000";ctx.fillRect(0,0,width,height);ctx.lineWidth=1;ctx.font="8px monospace";ctx.textBaseline="top";for(let i=1;i<5;i++){const y=i*height/5;ctx.strokeStyle="#071d2d";ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(width,y);ctx.stroke();ctx.fillStyle="#244960";ctx.fillText(`${Math.round(ceiling-(ceiling-floor)*i/5)} dB`,5,y+4)}for(let i=1;i<10;i++){const x=i*width/10;ctx.strokeStyle=i===5?"#0b3d5b":"#061725";ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,height);ctx.stroke()}tracePath(ctx,values,width,height,point);ctx.lineTo(width,height);ctx.lineTo(0,height);ctx.closePath();ctx.fillStyle="#0077ff18";ctx.fill();tracePath(ctx,values,width,height,point);ctx.strokeStyle="#20baff";ctx.lineWidth=1;ctx.stroke()}
+function frequency(value) {
+  return `${mhz(value)} MHz`;
+}
 
-function heatColor(db){const t=Math.max(0,Math.min(1,(db+92)/72));const stops=[[0,0,0],[0,9,30],[0,47,132],[0,132,255],[34,201,255],[218,247,255]];const scaled=t*(stops.length-1);const index=Math.min(stops.length-2,Math.floor(scaled));const mix=scaled-index;return stops[index].map((value,i)=>Math.round(value+(stops[index+1][i]-value)*mix))}
-function drawWaterfall(frame){const resized=fitCanvas(elements.waterfall);const canvas=elements.waterfall;const ctx=canvas.getContext("2d",{alpha:false});const rowHeight=1;if(resized||!waterfallStarted){ctx.fillStyle="#000";ctx.fillRect(0,0,canvas.width,canvas.height);waterfallStarted=true}else{ctx.drawImage(canvas,0,0,canvas.width,canvas.height-rowHeight,0,rowHeight,canvas.width,canvas.height-rowHeight)}const image=ctx.createImageData(canvas.width,rowHeight);const values=frame.spectrum_db;for(let x=0;x<canvas.width;x++){const position=x/Math.max(1,canvas.width-1)*(values.length-1);const lower=Math.floor(position);const upper=Math.min(values.length-1,lower+1);const mix=position-lower;const db=values[lower]+(values[upper]-values[lower])*mix;const color=heatColor(db);const offset=x*4;image.data[offset]=color[0];image.data[offset+1]=color[1];image.data[offset+2]=color[2];image.data[offset+3]=255}ctx.putImageData(image,0,0)}
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unavailable";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
 
-function acceptFrame(frame){latestFrame=frame;targetSpectrum=[...frame.spectrum_db];if(!displaySpectrum||displaySpectrum.length!==targetSpectrum.length)displaySpectrum=[...targetSpectrum];elements.spectrumEmpty.hidden=true;drawWaterfall(frame);elements.bufferValue.textContent=`${frame.buffer_seconds.toFixed(1)} s`;elements.bufferMeter.style.width=`${Math.min(100,frame.buffer_seconds/30*100)}%`;elements.memoryState.textContent=frame.buffer_seconds>=29.9?"ARMED":"FILLING";elements.excess.textContent=`${frame.excess_db>=0?"+":""}${frame.excess_db.toFixed(1)} dB`;elements.detectorState.textContent=frame.detector_ready?(frame.archived?"EVENT SAVED":frame.detector_active?"ECHO IN PROGRESS":"ARMED"):"LEARNING";const position=(frame.detection_frequency_hz-frame.lower_edge_hz)/(frame.upper_edge_hz-frame.lower_edge_hz)*100;elements.targetLine.style.left=`${Math.max(0,Math.min(100,position))}%`;updateAxes((frame.lower_edge_hz+frame.upper_edge_hz)/2,frame.upper_edge_hz-frame.lower_edge_hz);if(tuningCenter!==null&&Math.abs((frame.lower_edge_hz+frame.upper_edge_hz)/2-tuningCenter)<2){elements.retuneOverlay.hidden=true;tuningCenter=null}if(frame.archived){showMessage("PROFILE-MATCHED CANDIDATE SAVED — RAW I/Q + WATERFALL");window.setTimeout(loadEvents,500)}frameCounter++;const now=performance.now();if(now-frameWindow>=1000){elements.frameRate.textContent=(frameCounter*1000/(now-frameWindow)).toFixed(1);frameCounter=0;frameWindow=now}}
-function animationLoop(now){if(pendingFrame&&pendingFrame.sequence!==renderedSequence){renderedSequence=pendingFrame.sequence;acceptFrame(pendingFrame)}if(latestFrame&&targetSpectrum&&now-lastSpectrumDraw>=50){displaySpectrum=displaySpectrum.map((value,index)=>value+(targetSpectrum[index]-value)*.38);drawSpectrum(latestFrame);lastSpectrumDraw=now}requestAnimationFrame(animationLoop)}
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "—";
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GiB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(value / 1024).toFixed(1)} KiB`;
+}
 
-function eventCard(event){const card=document.createElement("article");card.className="event-card";if(event.preview_url){const image=document.createElement("img");image.className="event-preview";image.src=event.preview_url;image.alt=`Waterfall preview from ${formatDate(event.triggered_at_utc)}`;image.loading="lazy";card.append(image)}else{const placeholder=document.createElement("div");placeholder.className="event-preview";card.append(placeholder)}const details=document.createElement("div");details.className="event-details";const name=document.createElement("strong");name.textContent=event.data_file.replace(".cu8","");const date=document.createElement("small");date.textContent=formatDate(event.triggered_at_utc);const metrics=document.createElement("div");metrics.className="event-metrics";metrics.append(eventMetric(frequency(event.detection_frequency_hz),"WATCH"),eventMetric(`+${Number(event.trigger_excess_db).toFixed(1)} dB`,"RISE"),eventMetric(formatBytes(event.byte_count),"RAW"));details.append(name,date,metrics);card.append(details);return card}
-function eventMetric(value,label){const cell=document.createElement("div");cell.textContent=value;const caption=document.createElement("span");caption.textContent=label;cell.append(caption);return cell}
-async function loadEvents(){try{const payload=await request("/api/events");elements.events.replaceChildren();if(!payload.events.length){const empty=document.createElement("div");empty.className="empty";empty.innerHTML="<span></span><strong>NO CANDIDATES RECORDED</strong><p>The detector archives events after its baseline and buffer are ready.</p>";elements.events.append(empty);return}payload.events.forEach(event=>elements.events.append(eventCard(event)))}catch(error){showMessage("EVENT ARCHIVE UNAVAILABLE",true)}}
-async function retryHardware(status){if(status.source!=="hardware"||status.state!=="error"||hardwareRetryBusy||Date.now()-lastHardwareRetry<4000)return;hardwareRetryBusy=true;lastHardwareRetry=Date.now();try{applyStatus(await request("/api/live/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(buildPayload())}))}catch(error){}finally{hardwareRetryBusy=false}}
-async function pollStatus(){try{const status=await request("/api/live/status");applyStatus(status);retryHardware(status)}catch(error){elements.connection.classList.add("error");elements.connectionLabel.textContent="DASHBOARD OFFLINE"}}
+function showMessage(text, error = false) {
+  elements.message.hidden = false;
+  elements.message.textContent = text;
+  elements.message.classList.toggle("error", error);
+}
 
-async function retune(center,span=Number(elements.sampleRate.value)){center=clampCenter(center,span);const previousCenter=Number(elements.center.value)*1e6;elements.center.value=mhz(center);let target=Number(elements.detection.value)*1e6;if(target<center-span/2||target>center+span/2||!Number.isFinite(target))target=center;else if(Math.abs(target-previousCenter)<2)target=center;elements.detection.value=mhz(target);updateAxes(center,span);if(monitorState!=="running"&&monitorState!=="starting")return;tuningCenter=Math.round(center);elements.retuneFrequency.textContent=frequency(center);elements.retuneOverlay.hidden=false;elements.detectorState.textContent="RETUNING";elements.memoryState.textContent="RESET";if(retuneBusy){queuedRetune={center,span};return}retuneBusy=true;const payload=buildPayload();try{applyStatus(await request("/api/live/tune",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));waterfallStarted=false;targetSpectrum=null;displaySpectrum=null;showMessage("RECEIVER RETUNED IN PLACE — 30-SECOND MEMORY RESTARTED")}catch(error){elements.retuneOverlay.hidden=true;tuningCenter=null;showMessage(error.message,true);pollStatus()}finally{retuneBusy=false;if(queuedRetune){const next=queuedRetune;queuedRetune=null;retune(next.center,next.span)}}}
+function clearMessage() {
+  elements.message.hidden = true;
+  elements.message.textContent = "";
+  elements.message.classList.remove("error");
+}
 
-async function setWatch(frequencyHz){elements.detection.value=mhz(frequencyHz);try{applyStatus(await request("/api/live/watch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({detection_frequency_hz:Math.round(frequencyHz)})}));showMessage(`WATCH LINE SET TO ${frequency(frequencyHz)} — BUFFER CONTINUES`)}catch(error){showMessage(error.message,true)}}
+async function request(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+  return payload;
+}
 
-function updateAudioUi(){const radioMode=Number(elements.sampleRate.value)===250000;elements.audioButton.textContent=audioEnabled?"Disable audio":"Enable audio";elements.audioButton.classList.toggle("active",audioEnabled);elements.audioNote.textContent=`AUDIO ${audioEnabled?"ON":"OFF"} · ${radioMode?"FM AUDIO MODE":"WIDEBAND"} · WATCH ${Number(elements.detection.value).toFixed(3)} MHz`}
-function schedulePcm(bytes,sampleRate){if(!audioEnabled||!audioContext||!audioGainNode||bytes.byteLength<2)return;const sampleCount=Math.floor(bytes.byteLength/2);const audioBuffer=audioContext.createBuffer(1,sampleCount,sampleRate);const channel=audioBuffer.getChannelData(0);const view=new DataView(bytes.buffer,bytes.byteOffset,sampleCount*2);for(let index=0;index<sampleCount;index++)channel[index]=view.getInt16(index*2,true)/32768;const source=audioContext.createBufferSource();source.buffer=audioBuffer;source.connect(audioGainNode);if(audioNextTime<=audioContext.currentTime+.005)audioNextTime=audioContext.currentTime+.1;source.start(audioNextTime);audioNextTime+=audioBuffer.duration}
-async function streamAudio(signal){try{const response=await fetch("/api/live/audio",{signal,cache:"no-store"});if(!response.ok){let detail="Audio stream unavailable";try{detail=(await response.json()).error||detail}catch(error){}throw new Error(detail)}const sampleRate=Number(response.headers.get("X-Audio-Sample-Rate"))||32000;const reader=response.body.getReader();let chunks=[];let queuedBytes=0;while(audioEnabled&&!signal.aborted){const{done,value}=await reader.read();if(done)break;if(value&&value.byteLength){chunks.push(value);queuedBytes+=value.byteLength}if(queuedBytes<8192)continue;const combined=new Uint8Array(queuedBytes);let offset=0;chunks.forEach(chunk=>{combined.set(chunk,offset);offset+=chunk.byteLength});const usable=combined.byteLength-combined.byteLength%2;schedulePcm(combined.subarray(0,usable),sampleRate);chunks=usable<combined.byteLength?[combined.subarray(usable)]:[];queuedBytes=combined.byteLength-usable}if(audioEnabled&&!signal.aborted)throw new Error("Audio stream ended")}catch(error){if(error.name!=="AbortError"){showMessage(error.message||"Audio stream stopped",true);stopAudio()}}}
-async function startAudio(){if(audioEnabled)return;const AudioApi=window.AudioContext||window.webkitAudioContext;if(!AudioApi){showMessage("THIS BROWSER DOES NOT SUPPORT LIVE AUDIO",true);return}try{audioContext=new AudioApi();await audioContext.resume();audioGainNode=audioContext.createGain();audioGainNode.gain.value=.4;audioGainNode.connect(audioContext.destination);audioAbort=new AbortController();audioNextTime=0;audioEnabled=true;updateAudioUi();streamAudio(audioAbort.signal);showMessage(`FM AUDIO ENABLED AT ${Number(elements.detection.value).toFixed(3)} MHz`)}catch(error){showMessage(error.message||"Audio could not start",true);stopAudio()}}
-async function stopAudio(){audioEnabled=false;if(audioAbort)audioAbort.abort();audioAbort=null;const closing=audioContext;audioContext=null;audioGainNode=null;audioNextTime=0;updateAudioUi();if(closing&&closing.state!=="closed")try{await closing.close()}catch(error){}}
+function meteorTargetHz() {
+  return Math.round(Number(elements.meteorFrequency.value) * 1e6);
+}
 
-elements.retry.addEventListener("click",async()=>{clearMessage();try{applyStatus(await request("/api/live/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(buildPayload())}));showMessage("RECEIVER RESTARTING") }catch(error){showMessage(error.message,true)}});elements.tuneDown.addEventListener("click",()=>{const view=currentWindow();retune(view.center-200_000)});elements.tuneUp.addEventListener("click",()=>{const view=currentWindow();retune(view.center+200_000)});elements.watchCenter.addEventListener("click",()=>setWatch(Number(elements.center.value)*1e6));elements.audioButton.addEventListener("click",()=>audioEnabled?stopAudio():startAudio());elements.targetPresets.forEach(button=>button.addEventListener("click",()=>{const center=Number(button.dataset.frequency)*1e6;const span=Number(button.dataset.presetSpan)||Number(elements.sampleRate.value);elements.sampleRate.value=String(span);elements.detection.value=mhz(center);setActiveSpan();retune(center,span)}));elements.center.addEventListener("change",()=>retune(Number(elements.center.value)*1e6));elements.spanButtons.forEach(button=>button.addEventListener("click",()=>{elements.sampleRate.value=button.dataset.span;setActiveSpan();retune(Number(elements.center.value)*1e6,Number(button.dataset.span))}));elements.refresh.addEventListener("click",loadEvents);window.addEventListener("resize",()=>{if(latestFrame){drawSpectrum(latestFrame);waterfallStarted=false;drawWaterfall(latestFrame)}});
+function meteorCenterHz(targetHz) {
+  const halfSpan = METEOR_SPAN_HZ / 2;
+  const positive = targetHz + METEOR_CENTER_OFFSET_HZ;
+  if (positive + halfSpan <= FM_HIGH_HZ) return positive;
+  return Math.max(FM_LOW_HZ + halfSpan, targetHz - METEOR_CENTER_OFFSET_HZ);
+}
 
-const stream=new EventSource("/api/live/events");stream.addEventListener("frame",event=>{pendingFrame=JSON.parse(event.data)});stream.onerror=()=>{if(monitorState==="running"){elements.connection.classList.add("error");elements.connectionLabel.textContent="STREAM RECONNECTING"}};
-setActiveSpan();updateAxes();updateAudioUi();pollStatus();loadEvents();requestAnimationFrame(animationLoop);window.setInterval(pollStatus,2000);
+function meteorPayload() {
+  const target = meteorTargetHz();
+  return {
+    center_frequency_hz: meteorCenterHz(target),
+    sample_rate_hz: METEOR_SPAN_HZ,
+    gain_db: elements.gain.value === "auto" ? "auto" : Number(elements.gain.value),
+    detection_frequency_hz: target,
+    threshold_db: Number(elements.threshold.value),
+    observation_mode: "meteor",
+  };
+}
+
+function radioPayload() {
+  return {
+    center_frequency_hz: RADIO_CHECK_FREQUENCY_HZ,
+    sample_rate_hz: RADIO_CHECK_SPAN_HZ,
+    gain_db: elements.gain.value === "auto" ? "auto" : Number(elements.gain.value),
+    detection_frequency_hz: RADIO_CHECK_FREQUENCY_HZ,
+    threshold_db: Number(elements.threshold.value),
+    observation_mode: "radio_check",
+  };
+}
+
+function postSettings(url, payload) {
+  return request(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function setSensitivity(value) {
+  elements.threshold.value = String(value);
+  elements.thresholdValue.textContent = `${Number(value).toFixed(1)} dB`;
+  elements.sensitivityButtons.forEach((button) => {
+    button.classList.toggle("active", Number(button.dataset.threshold) === Number(value));
+  });
+}
+
+function setMarkerPositions(lower, upper, target, center) {
+  const span = upper - lower;
+  if (span <= 0) return;
+  const targetPosition = ((target - lower) / span) * 100;
+  const centerPosition = ((center - lower) / span) * 100;
+  elements.watchMarker.style.left = `${Math.max(0, Math.min(100, targetPosition))}%`;
+  elements.centerMarker.style.left = `${Math.max(0, Math.min(100, centerPosition))}%`;
+  elements.low.textContent = frequency(lower);
+  elements.targetAxis.textContent = `${frequency(target)} TARGET`;
+  elements.high.textContent = frequency(upper);
+}
+
+function resetVisuals() {
+  waterfallStarted = false;
+  waterfallRow = null;
+  powerHistory = [];
+  const waterfallContext = elements.waterfall.getContext("2d");
+  waterfallContext.clearRect(0, 0, elements.waterfall.width, elements.waterfall.height);
+  drawPowerChart();
+}
+
+function applyReceiverStatus(status) {
+  const receiver = status.receiver || { connected: false, display_name: "RTL-SDR not connected" };
+  const demo = status.source === "simulation";
+  const connected = !demo && Boolean(receiver.connected);
+  elements.connection.classList.toggle("live", connected);
+  elements.connection.classList.toggle("error", !demo && status.state === "error");
+  elements.sourceBanner.classList.toggle("demo", demo);
+  elements.sourceBanner.classList.toggle("connected", connected);
+  elements.sourceBanner.classList.toggle("disconnected", !demo && !connected);
+
+  if (demo) {
+    elements.connectionLabel.textContent = "TRAINING DATA · NO SDR";
+    elements.receiverName.textContent = "SIMULATED RECEIVER";
+    elements.receiverDetail.textContent = "NOT PHYSICAL RF DATA";
+    elements.sourceTitle.textContent = "TRAINING MODE";
+    elements.sourceDetail.textContent = "The current signals and saved training candidates are synthetic.";
+  } else if (connected) {
+    const serial = receiver.serial ? `SERIAL ${receiver.serial}` : "USB RECEIVER";
+    elements.connectionLabel.textContent = "PHYSICAL SDR CONNECTED";
+    elements.receiverName.textContent = receiver.display_name || "RTL-SDR receiver";
+    elements.receiverDetail.textContent = serial;
+    elements.sourceTitle.textContent = "PHYSICAL RECEIVER VERIFIED";
+    elements.sourceDetail.textContent = `${receiver.display_name || "RTL-SDR receiver"} · ${serial} · receive-only hardware`;
+  } else {
+    elements.connectionLabel.textContent = status.state === "starting" ? "CHECKING USB" : "SDR NEEDS ATTENTION";
+    elements.receiverName.textContent = "RTL-SDR NOT CONNECTED";
+    elements.receiverDetail.textContent = "NO USB RECEIVER OPEN";
+    elements.sourceTitle.textContent = status.state === "starting" ? "CHECKING PHYSICAL RECEIVER" : "NO PHYSICAL RF DATA";
+    elements.sourceDetail.textContent = "Reconnect the Nooelec receiver; the app will keep retrying safely.";
+  }
+  elements.receiverName.title = elements.receiverName.textContent;
+}
+
+function updateDetectorStatus(status, frame = null) {
+  const mode = status.settings?.observation_mode || "meteor";
+  if (mode === "radio_check") {
+    elements.detectorState.textContent = "PAUSED";
+    elements.detectorDetail.textContent = "RADIO CHECK · SAVING DISABLED";
+    return;
+  }
+  if (status.state === "error") {
+    elements.detectorState.textContent = "NEEDS RECEIVER";
+    elements.detectorDetail.textContent = "NO PHYSICAL RF STREAM";
+    return;
+  }
+  if (status.state === "stopped") {
+    elements.detectorState.textContent = "PAUSED";
+    elements.detectorDetail.textContent = "METEOR WATCH IS STOPPED";
+    return;
+  }
+  if (!frame) {
+    elements.detectorState.textContent = "PREPARING";
+    elements.detectorDetail.textContent = "WAITING FOR RF FRAMES";
+    return;
+  }
+  if (frame.archived) {
+    elements.detectorState.textContent = "CANDIDATE SAVED";
+    elements.detectorDetail.textContent = "RAW I/Q + METADATA + PREVIEW";
+  } else if (frame.detector_active) {
+    elements.detectorState.textContent = "ECHO IN PROGRESS";
+    elements.detectorDetail.textContent = "WAITING FOR THE SIGNAL TO DECAY";
+  } else if (frame.detector_ready && frame.buffer_seconds >= 29.9) {
+    elements.detectorState.textContent = "ARMED";
+    elements.detectorDetail.textContent = "WATCHING FOR A RISE AND DECAY";
+  } else if (!frame.detector_ready) {
+    const readiness = Math.round((Number(frame.detector_readiness) || 0) * 100);
+    elements.detectorState.textContent = "CALIBRATING";
+    elements.detectorDetail.textContent = `LEARNING BACKGROUND · ${readiness}%`;
+  } else {
+    elements.detectorState.textContent = "FILLING MEMORY";
+    elements.detectorDetail.textContent = `${Math.max(0, 30 - frame.buffer_seconds).toFixed(1)} SECONDS UNTIL ARMED`;
+  }
+}
+
+function applyStatus(status) {
+  currentStatus = status;
+  monitorState = status.state;
+  const settings = status.settings || {};
+  radioCheckActive = settings.observation_mode === "radio_check";
+  const live = status.state === "running" || status.state === "starting";
+  applyReceiverStatus(status);
+  updateDetectorStatus(status);
+
+  elements.bufferValue.innerHTML = `${Number(status.buffer_seconds || 0).toFixed(1)} <small>s / 30 s</small>`;
+  elements.bufferMeter.style.width = `${Math.min(100, Number(status.buffer_seconds || 0) / 30 * 100)}%`;
+  elements.candidateCount.textContent = `${status.candidate_count || 0} candidate${status.candidate_count === 1 ? "" : "s"}`;
+
+  if (!radioCheckActive && Number.isFinite(settings.detection_frequency_hz)) {
+    const target = settings.detection_frequency_hz;
+    elements.meteorFrequency.value = (target / 1e6).toFixed(1);
+    elements.detection.value = mhz(target);
+    elements.headerTarget.textContent = mhz(target);
+    elements.sampleRate.value = String(settings.sample_rate_hz || METEOR_SPAN_HZ);
+    setSensitivity(settings.threshold_db || 8);
+  }
+
+  elements.modeOverlay.hidden = !radioCheckActive;
+  elements.canvasEmpty.hidden = live || radioCheckActive;
+  elements.calibrate.disabled = !live || radioCheckActive;
+  elements.watch.disabled = radioCheckActive || status.state === "starting";
+  elements.watch.textContent = status.state === "running" ? "Pause meteor watch" : "Start meteor watch";
+  elements.retry.hidden = status.state !== "error";
+  elements.audioButton.disabled = !live;
+  updateAudioUi();
+
+  if (!live && audioEnabled) stopAudio();
+  if (status.error) showMessage(status.error, true);
+}
+
+function ensureCanvasSize(canvas) {
+  const width = Math.max(1, Math.round(Math.min(canvas.clientWidth, 1280)));
+  const height = Math.max(1, Math.round(canvas.clientHeight));
+  if (canvas.width === width && canvas.height === height) return false;
+  canvas.width = width;
+  canvas.height = height;
+  return true;
+}
+
+const heatLut = Array.from({ length: 256 }, (_, index) => {
+  const t = index / 255;
+  const stops = [[0, 0, 0], [1, 12, 34], [0, 47, 126], [0, 143, 218], [73, 215, 255], [224, 250, 255]];
+  const scaled = t * (stops.length - 1);
+  const lower = Math.min(stops.length - 2, Math.floor(scaled));
+  const mix = scaled - lower;
+  return stops[lower].map((value, channel) => Math.round(value + (stops[lower + 1][channel] - value) * mix));
+});
+
+function drawWaterfall(frame) {
+  if (radioCheckActive) return;
+  const resized = ensureCanvasSize(elements.waterfall);
+  const canvas = elements.waterfall;
+  const context = canvas.getContext("2d", { alpha: false });
+  if (resized || !waterfallStarted) {
+    context.fillStyle = "#020507";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    waterfallStarted = true;
+    waterfallRow = context.createImageData(canvas.width, 1);
+  } else {
+    context.drawImage(canvas, 0, 0, canvas.width, canvas.height - 1, 0, 1, canvas.width, canvas.height - 1);
+  }
+  if (!waterfallRow || waterfallRow.width !== canvas.width) waterfallRow = context.createImageData(canvas.width, 1);
+  const values = frame.spectrum_db;
+  for (let x = 0; x < canvas.width; x += 1) {
+    const position = x / Math.max(1, canvas.width - 1) * (values.length - 1);
+    const lower = Math.floor(position);
+    const upper = Math.min(values.length - 1, lower + 1);
+    const mix = position - lower;
+    const db = values[lower] + (values[upper] - values[lower]) * mix;
+    const color = heatLut[Math.max(0, Math.min(255, Math.round((db + 95) / 75 * 255)))];
+    const offset = x * 4;
+    waterfallRow.data[offset] = color[0];
+    waterfallRow.data[offset + 1] = color[1];
+    waterfallRow.data[offset + 2] = color[2];
+    waterfallRow.data[offset + 3] = 255;
+  }
+  context.putImageData(waterfallRow, 0, 0);
+}
+
+function drawPowerChart() {
+  ensureCanvasSize(elements.power);
+  const canvas = elements.power;
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  context.fillStyle = "#020507";
+  context.fillRect(0, 0, width, height);
+  context.lineWidth = 1;
+  for (let row = 1; row < 4; row += 1) {
+    const y = row * height / 4;
+    context.strokeStyle = "#12242d";
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+    context.stroke();
+  }
+  for (let column = 1; column < 6; column += 1) {
+    const x = column * width / 6;
+    context.strokeStyle = "#0d1c23";
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, height);
+    context.stroke();
+  }
+  if (!powerHistory.length) return;
+  const newest = powerHistory[powerHistory.length - 1].time;
+  const oldest = newest - POWER_WINDOW_MS;
+  const maximum = Math.max(14, ...powerHistory.map((item) => item.threshold + 5), ...powerHistory.map((item) => item.excess + 3));
+  const minimum = -4;
+  const xFor = (time) => Math.max(0, Math.min(width, (time - oldest) / POWER_WINDOW_MS * width));
+  const yFor = (value) => height - (Math.max(minimum, Math.min(maximum, value)) - minimum) / (maximum - minimum) * height;
+  const threshold = powerHistory[powerHistory.length - 1].threshold;
+  const thresholdY = yFor(threshold);
+  context.setLineDash([6, 5]);
+  context.strokeStyle = "#d4a94f";
+  context.beginPath();
+  context.moveTo(0, thresholdY);
+  context.lineTo(width, thresholdY);
+  context.stroke();
+  context.setLineDash([]);
+  elements.powerThresholdLabel.style.top = `${Math.max(2, thresholdY - 13)}px`;
+
+  const plot = (field, color, widthValue) => {
+    context.beginPath();
+    powerHistory.forEach((item, index) => {
+      const x = xFor(item.time);
+      const y = yFor(item[field]);
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    });
+    context.strokeStyle = color;
+    context.lineWidth = widthValue;
+    context.stroke();
+  };
+  plot("reference", "rgba(255, 118, 149, .46)", 1);
+  plot("excess", "#38c7ff", 2);
+}
+
+function acceptFrame(frame) {
+  if (radioCheckActive || frame.observation_mode === "radio_check") {
+    elements.modeOverlay.hidden = false;
+    return;
+  }
+  elements.canvasEmpty.hidden = true;
+  elements.modeOverlay.hidden = true;
+  drawWaterfall(frame);
+  const timestamp = Date.parse(frame.timestamp_utc) || Date.now();
+  powerHistory.push({
+    time: timestamp,
+    excess: Number(frame.excess_db) || 0,
+    reference: Number(frame.reference_excess_db) || 0,
+    threshold: Number(frame.threshold_db) || Number(elements.threshold.value),
+  });
+  powerHistory = powerHistory.filter((item) => item.time >= timestamp - POWER_WINDOW_MS);
+  drawPowerChart();
+
+  elements.bufferValue.innerHTML = `${Number(frame.buffer_seconds).toFixed(1)} <small>s / 30 s</small>`;
+  elements.bufferMeter.style.width = `${Math.min(100, frame.buffer_seconds / 30 * 100)}%`;
+  elements.excess.textContent = `${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB`;
+  elements.thresholdValue.textContent = `${Number(frame.threshold_db).toFixed(1)} dB`;
+  updateDetectorStatus(currentStatus || { state: monitorState, settings: { observation_mode: "meteor" } }, frame);
+
+  const center = (frame.lower_edge_hz + frame.upper_edge_hz) / 2;
+  setMarkerPositions(frame.lower_edge_hz, frame.upper_edge_hz, frame.detection_frequency_hz, center);
+  elements.headerTarget.textContent = mhz(frame.detection_frequency_hz);
+  elements.canvasSummary.textContent = frame.detector_active
+    ? `Candidate in progress at ${frequency(frame.detection_frequency_hz)}: ${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB above background.`
+    : `Watching ${frequency(frame.detection_frequency_hz)}. Current rise ${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB; surrounding-band change ${Number(frame.reference_excess_db).toFixed(1)} dB.`;
+
+  if (elements.retuneOverlay.hidden === false) elements.retuneOverlay.hidden = true;
+  if (frame.archived) {
+    showMessage("Unconfirmed meteor-echo candidate queued: raw I/Q, metadata, and waterfall preview.");
+    window.setTimeout(loadEvents, 700);
+  }
+}
+
+function animationLoop() {
+  if (pendingFrame && pendingFrame.sequence !== renderedSequence) {
+    renderedSequence = pendingFrame.sequence;
+    acceptFrame(pendingFrame);
+  }
+  requestAnimationFrame(animationLoop);
+}
+
+function profileLabel(profile) {
+  if (profile === "underdense_like") return "SHORT-TRAIL CANDIDATE";
+  if (profile === "overdense_like") return "LONG-TRAIL CANDIDATE";
+  return "NEEDS REVIEW";
+}
+
+function eventMetric(value, label) {
+  const cell = document.createElement("div");
+  cell.textContent = value;
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  cell.append(caption);
+  return cell;
+}
+
+function eventCard(event) {
+  const card = document.createElement("article");
+  card.className = "event-card";
+  const previewWrap = document.createElement("div");
+  previewWrap.className = "event-preview-wrap";
+  if (event.preview_url) {
+    const image = document.createElement("img");
+    image.className = "event-preview";
+    image.src = event.preview_url;
+    image.alt = `Unconfirmed candidate waterfall from ${formatDate(event.triggered_at_utc)}`;
+    image.loading = "lazy";
+    previewWrap.append(image);
+  } else {
+    const fallback = document.createElement("div");
+    fallback.className = "event-preview-fallback";
+    fallback.textContent = "PREVIEW UNAVAILABLE";
+    previewWrap.append(fallback);
+  }
+  const training = event.radio_source === "simulation";
+  const legacyRadioCheck = !event.observation_mode && Number(event.detection_frequency_hz) === RADIO_CHECK_FREQUENCY_HZ;
+  const badge = document.createElement("span");
+  badge.className = `event-badge${training ? " training" : ""}`;
+  badge.textContent = training ? "TRAINING DATA" : legacyRadioCheck ? "LEGACY RADIO TEST" : "UNCONFIRMED";
+  previewWrap.append(badge);
+  card.append(previewWrap);
+
+  const details = document.createElement("div");
+  details.className = "event-details";
+  const title = document.createElement("strong");
+  title.textContent = legacyRadioCheck ? "Receiver-test capture" : profileLabel(event.echo_profile);
+  const date = document.createElement("small");
+  date.textContent = formatDate(event.triggered_at_utc);
+  const metrics = document.createElement("div");
+  metrics.className = "event-metrics";
+  const rise = Number(event.trigger_excess_db);
+  const duration = Number(event.echo_duration_seconds);
+  const reference = Number(event.reference_excess_db);
+  metrics.append(
+    eventMetric(Number.isFinite(rise) ? `+${rise.toFixed(1)} dB` : "—", "PEAK RISE"),
+    eventMetric(Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "—", "DURATION"),
+    eventMetric(Number.isFinite(reference) ? `${reference.toFixed(1)} dB` : "—", "SURROUNDINGS"),
+  );
+  const note = document.createElement("p");
+  note.className = "event-note";
+  note.textContent = legacyRadioCheck
+    ? "Saved before receiver checks were isolated. Do not treat this file as meteor evidence."
+    : `${frequency(event.detection_frequency_hz)} · ${formatBytes(event.byte_count)} raw evidence`;
+  details.append(title, date, metrics, note);
+  card.append(details);
+  return card;
+}
+
+async function loadEvents() {
+  try {
+    const payload = await request("/api/events");
+    const simulation = currentStatus?.source === "simulation";
+    const events = (payload.events || []).filter((event) => simulation
+      ? event.radio_source === "simulation"
+      : event.radio_source !== "simulation").slice(0, 12);
+    elements.events.replaceChildren();
+    if (!events.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.innerHTML = `<span class="empty-orbit" aria-hidden="true"></span><strong>${simulation ? "NO TRAINING CANDIDATES YET" : "NO PHYSICAL CANDIDATES YET"}</strong><p>The station adds evidence after calibration, a full 30-second memory, and a qualifying rise-and-decay.</p>`;
+      elements.events.append(empty);
+    } else {
+      events.forEach((event) => elements.events.append(eventCard(event)));
+    }
+    const storage = payload.storage || {};
+    elements.storageUsed.textContent = `${formatBytes(storage.used_bytes)} stored locally`;
+    elements.storageDetail.textContent = `${storage.event_count || 0} raw files · ${formatBytes(storage.free_bytes)} free`;
+  } catch (error) {
+    showMessage("Candidate archive could not be read.", true);
+  }
+}
+
+async function calibrateMeteorTarget(message = "Meteor target applied") {
+  if (radioCheckActive) return;
+  const payload = meteorPayload();
+  if (payload.detection_frequency_hz < FM_LOW_HZ || payload.detection_frequency_hz > FM_HIGH_HZ) {
+    showMessage("Choose a target inside the 87.5–108 MHz FM band.", true);
+    return;
+  }
+  clearMessage();
+  elements.retuneFrequency.textContent = frequency(payload.detection_frequency_hz);
+  elements.retuneOverlay.hidden = false;
+  try {
+    const endpoint = monitorState === "running" || monitorState === "starting" ? "/api/live/tune" : "/api/live/start";
+    const status = await postSettings(endpoint, payload);
+    applyStatus(status);
+    resetVisuals();
+    showMessage(`${message}. Background learning and the 30-second evidence memory restarted.`);
+  } catch (error) {
+    elements.retuneOverlay.hidden = true;
+    showMessage(error.message, true);
+  }
+}
+
+async function toggleMeteorWatch() {
+  clearMessage();
+  try {
+    if (monitorState === "running" || monitorState === "starting") {
+      if (audioEnabled) await stopAudio();
+      applyStatus(await postSettings("/api/live/stop", {}));
+      showMessage("Meteor watch paused. The unsaved RAM memory was cleared.");
+    } else {
+      applyStatus(await postSettings("/api/live/start", meteorPayload()));
+      resetVisuals();
+      showMessage("Meteor watch starting. The detector will calibrate before arming.");
+    }
+  } catch (error) {
+    showMessage(error.message, true);
+  }
+}
+
+async function retryHardware(status) {
+  if (status.source !== "hardware" || status.state !== "error" || hardwareRetryBusy || Date.now() - lastHardwareRetry < 4000) return;
+  hardwareRetryBusy = true;
+  lastHardwareRetry = Date.now();
+  try {
+    applyStatus(await postSettings("/api/live/start", meteorPayload()));
+  } catch (error) {
+    // The visible receiver state remains authoritative while USB is unavailable.
+  } finally {
+    hardwareRetryBusy = false;
+  }
+}
+
+async function pollStatus() {
+  try {
+    const status = await request("/api/live/status");
+    applyStatus(status);
+    retryHardware(status);
+  } catch (error) {
+    elements.connection.classList.add("error");
+    elements.connectionLabel.textContent = "DASHBOARD OFFLINE";
+  }
+}
+
+function schedulePcm(bytes, sampleRate) {
+  if (!audioEnabled || !audioContext || !audioGainNode || bytes.byteLength < 2) return;
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  const buffer = audioContext.createBuffer(1, sampleCount, sampleRate);
+  const channel = buffer.getChannelData(0);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+  for (let index = 0; index < sampleCount; index += 1) channel[index] = view.getInt16(index * 2, true) / 32768;
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioGainNode);
+  if (audioNextTime <= audioContext.currentTime + .005) audioNextTime = audioContext.currentTime + .1;
+  source.start(audioNextTime);
+  audioNextTime += buffer.duration;
+}
+
+async function streamAudio(signal) {
+  try {
+    const response = await fetch("/api/live/audio", { signal, cache: "no-store" });
+    if (!response.ok) {
+      let detail = "Receiver audio unavailable";
+      try { detail = (await response.json()).error || detail; } catch (error) { /* no JSON body */ }
+      throw new Error(detail);
+    }
+    const sampleRate = Number(response.headers.get("X-Audio-Sample-Rate")) || 32000;
+    const reader = response.body.getReader();
+    let chunks = [];
+    let queuedBytes = 0;
+    while (audioEnabled && !signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.byteLength) { chunks.push(value); queuedBytes += value.byteLength; }
+      if (queuedBytes < 8192) continue;
+      const combined = new Uint8Array(queuedBytes);
+      let offset = 0;
+      chunks.forEach((chunk) => { combined.set(chunk, offset); offset += chunk.byteLength; });
+      const usable = combined.byteLength - combined.byteLength % 2;
+      schedulePcm(combined.subarray(0, usable), sampleRate);
+      chunks = usable < combined.byteLength ? [combined.subarray(usable)] : [];
+      queuedBytes = combined.byteLength - usable;
+    }
+    if (audioEnabled && !signal.aborted) throw new Error("Receiver audio stream ended");
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      showMessage(error.message || "Receiver audio stopped", true);
+      await stopAudio();
+    }
+  }
+}
+
+async function prepareAudio() {
+  const AudioApi = window.AudioContext || window.webkitAudioContext;
+  if (!AudioApi) throw new Error("This browser does not support live receiver audio");
+  audioContext = new AudioApi();
+  await audioContext.resume();
+  audioGainNode = audioContext.createGain();
+  audioGainNode.gain.value = .4;
+  audioGainNode.connect(audioContext.destination);
+  audioNextTime = 0;
+}
+
+function beginAudio() {
+  audioAbort = new AbortController();
+  audioEnabled = true;
+  updateAudioUi();
+  streamAudio(audioAbort.signal);
+}
+
+async function stopAudio() {
+  audioEnabled = false;
+  if (audioAbort) audioAbort.abort();
+  audioAbort = null;
+  const closing = audioContext;
+  audioContext = null;
+  audioGainNode = null;
+  audioNextTime = 0;
+  updateAudioUi();
+  if (closing && closing.state !== "closed") {
+    try { await closing.close(); } catch (error) { /* already closed */ }
+  }
+}
+
+function updateAudioUi() {
+  elements.audioButton.classList.toggle("active", radioCheckActive || audioEnabled);
+  elements.audioButton.setAttribute("aria-pressed", String(radioCheckActive));
+  elements.audioButton.textContent = radioCheckActive ? "Stop audio & restore meteor watch" : "Play local FM 94.9";
+  elements.audioNote.textContent = radioCheckActive
+    ? `HARDWARE CHECK ${audioEnabled ? "PLAYING" : "ACTIVE"} · CANDIDATE SAVING OFF`
+    : "HARDWARE CHECK OFF · METEOR WATCH ACTIVE";
+}
+
+async function toggleRadioCheck() {
+  clearMessage();
+  if (radioCheckActive) {
+    try {
+      await stopAudio();
+      applyStatus(await postSettings("/api/live/tune", meteorPayload()));
+      radioCheckActive = false;
+      resetVisuals();
+      updateAudioUi();
+      showMessage("Meteor target restored. Background learning and evidence memory restarted.");
+    } catch (error) {
+      showMessage(error.message, true);
+    }
+    return;
+  }
+  try {
+    await prepareAudio();
+    applyStatus(await postSettings("/api/live/tune", radioPayload()));
+    radioCheckActive = true;
+    beginAudio();
+    showMessage("Local FM hardware check playing. Meteor detection and candidate saving are disabled.");
+  } catch (error) {
+    await stopAudio();
+    radioCheckActive = false;
+    updateAudioUi();
+    showMessage(error.message, true);
+  }
+}
+
+function closeTooltips(except = null) {
+  elements.tooltips.forEach((trigger) => {
+    const tooltip = document.getElementById(trigger.getAttribute("aria-describedby"));
+    if (trigger !== except) {
+      trigger.setAttribute("aria-expanded", "false");
+      tooltip?.classList.remove("visible");
+    }
+  });
+}
+
+elements.tooltips.forEach((trigger) => {
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const tooltip = document.getElementById(trigger.getAttribute("aria-describedby"));
+    const open = !tooltip?.classList.contains("visible");
+    closeTooltips(trigger);
+    tooltip?.classList.toggle("visible", open);
+    trigger.setAttribute("aria-expanded", String(open));
+  });
+});
+document.addEventListener("click", () => closeTooltips());
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTooltips(); });
+
+elements.calibrate.addEventListener("click", () => calibrateMeteorTarget());
+elements.watch.addEventListener("click", toggleMeteorWatch);
+elements.retry.addEventListener("click", () => calibrateMeteorTarget("Physical receiver retry started"));
+elements.audioButton.addEventListener("click", toggleRadioCheck);
+elements.sensitivityButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setSensitivity(Number(button.dataset.threshold));
+    if (monitorState === "running" && !radioCheckActive) calibrateMeteorTarget(`${button.textContent} meteor sensitivity selected`);
+  });
+});
+
+const resizeObserver = new ResizeObserver(() => {
+  if (ensureCanvasSize(elements.waterfall)) { waterfallStarted = false; waterfallRow = null; }
+  drawPowerChart();
+});
+resizeObserver.observe(elements.waterfallWrap);
+resizeObserver.observe(elements.power.parentElement);
+
+const stream = new EventSource("/api/live/events");
+stream.addEventListener("frame", (event) => { pendingFrame = JSON.parse(event.data); });
+stream.onerror = () => {
+  if (monitorState === "running") {
+    elements.connection.classList.add("error");
+    elements.connectionLabel.textContent = "RF STREAM RECONNECTING";
+  }
+};
+
+window.addEventListener("pagehide", () => {
+  if (radioCheckActive && monitorState === "running") {
+    fetch("/api/live/tune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(meteorPayload()),
+      keepalive: true,
+    }).catch(() => {});
+  }
+});
+
+setSensitivity(8);
+updateAudioUi();
+ensureCanvasSize(elements.power);
+ensureCanvasSize(elements.waterfall);
+drawPowerChart();
+pollStatus();
+loadEvents();
+requestAnimationFrame(animationLoop);
+window.setInterval(pollStatus, 2000);
+window.setInterval(loadEvents, 15000);

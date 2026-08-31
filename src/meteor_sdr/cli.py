@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--output-dir", type=Path, help="capture directory")
     capture.set_defaults(handler=_capture)
 
-    serve = commands.add_parser("serve", help="open the live spectrum and waterfall")
+    serve = commands.add_parser("serve", help="open the meteor echo observation dashboard")
     serve.add_argument("--config", type=Path, help="TOML configuration file")
     serve.add_argument(
         "--host",
@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser",
         action="store_true",
         help="do not open the dashboard in the Pi's browser",
+    )
+    serve.add_argument(
+        "--demo",
+        action="store_true",
+        help="use simulated RF data instead of requiring an SDR device",
     )
     serve.set_defaults(handler=_serve)
     return parser
@@ -145,6 +150,7 @@ def _serve(args: argparse.Namespace) -> int:
         host=args.host,
         port=args.port,
         open_browser=not args.no_browser,
+        demo_mode=args.demo,
     )
     return 0
 

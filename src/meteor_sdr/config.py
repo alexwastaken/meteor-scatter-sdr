@@ -20,9 +20,11 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CaptureConfig:
-    center_frequency_hz: int = 98_500_000
-    sample_rate_hz: int = 1_024_000
-    gain_db: float | None = None
+    # Keep the 95.3 MHz research target away from the RTL-SDR center/DC bin.
+    center_frequency_hz: int = 95_460_000
+    sample_rate_hz: int = 512_000
+    # Fixed gain keeps AGC changes from resembling transient meteor echoes.
+    gain_db: float | None = 28.0
     ppm: int = 0
     device: str = "0"
     duration_seconds: float = 10.0

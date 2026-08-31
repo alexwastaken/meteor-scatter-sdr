@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meteor-scatter-sdr"
-version = "0.6.0"
-description = "A live RTL-SDR spectrum, waterfall, and meteor-scatter candidate recorder"
+version = "0.7.0"
+description = "A meteor-first RTL-SDR echo monitor and raw candidate recorder"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -19,4 +19,4 @@ meteor-sdr = "meteor_sdr.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-meteor_sdr = ["web/*.html", "web/*.css", "web/*.js"]
+meteor_sdr = ["web/*.html", "web/*.css", "web/*.js", "web/assets/*.jpg"]

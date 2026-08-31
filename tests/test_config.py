@@ -18,8 +18,15 @@ class ConfigTests(unittest.TestCase):
 
     def test_default_capture_size(self) -> None:
         config = CaptureConfig().validated()
-        self.assertEqual(config.sample_count, 10_240_000)
-        self.assertEqual(config.expected_bytes, 20_480_000)
+        self.assertEqual(config.sample_count, 5_120_000)
+        self.assertEqual(config.expected_bytes, 10_240_000)
+
+    def test_default_meteor_profile_avoids_the_center_artifact(self) -> None:
+        config = CaptureConfig().validated()
+        target_hz = 95_300_000
+        self.assertGreaterEqual(abs(config.center_frequency_hz - target_hz), 80_000)
+        self.assertLessEqual(config.lower_edge_hz, target_hz - 80_000)
+        self.assertGreaterEqual(config.upper_edge_hz, target_hz + 80_000)
 
     def test_rejects_span_outside_antenna_band(self) -> None:
         with self.assertRaises(ConfigurationError):

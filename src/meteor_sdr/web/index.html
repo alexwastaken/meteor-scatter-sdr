@@ -3,105 +3,210 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#000000">
-    <title>Meteor SDR Observatory</title>
+    <meta name="theme-color" content="#020507">
+    <title>Meteor Echo Station</title>
     <link rel="stylesheet" href="/app.css">
-    <link rel="stylesheet" href="/display.css">
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <div class="stars" aria-hidden="true"></div>
     <div class="shell">
       <header class="topbar">
-        <div class="brand"><span class="brand-orbit"><i></i></span><div><strong>METEOR / SDR</strong><small>CARMEL VALLEY OBSERVATORY</small></div></div>
-        <div class="connection" id="connection"><i></i><span id="connection-label">SYSTEM READY</span></div>
+        <a class="brand" href="#main" aria-label="Meteor Echo Station home">
+          <span class="brand-mark" aria-hidden="true"><i></i></span>
+          <span><strong>METEOR ECHO</strong><small>CARMEL VALLEY · PASSIVE RECEIVER</small></span>
+        </a>
+        <div class="connection" id="connection" aria-live="polite">
+          <i aria-hidden="true"></i><span id="connection-label">CHECKING RECEIVER</span>
+        </div>
       </header>
 
-      <main>
-        <section class="mission-header">
-          <div><p class="kicker">FORWARD-SCATTER RECEIVER</p><h1>Night-sky radio console</h1><p>The receiver begins streaming automatically. The spectrum and waterfall are now view-only; use the dedicated frequency, span, and watch buttons to control the radio.</p></div>
-          <div class="mission-stats">
-            <div><span>ROLLING BUFFER</span><strong id="buffer-value">0.0 s</strong><div class="meter"><i id="buffer-meter"></i></div></div>
-            <div><span>CENTER</span><strong id="header-center">98.500</strong><small>MHz</small></div>
-            <div><span>FRAME RATE</span><strong id="frame-rate">0.0</strong><small>FPS</small></div>
+      <main id="main">
+        <section class="hero" aria-labelledby="page-title">
+          <img src="/assets/meteor-scatter-path.jpg" alt="" aria-hidden="true">
+          <div class="hero-shade"></div>
+          <div class="hero-copy">
+            <p class="eyebrow">RADIO METEOR-SCATTER OBSERVATORY</p>
+            <h1 id="page-title">Listen for the trail,<br>keep the evidence.</h1>
+            <p>This receive-only station watches for distant FM energy briefly reflected by an ionized meteor trail. It records candidates—not impacts and not confirmed meteors.</p>
+            <div class="hero-badges" aria-label="System assurances">
+              <span>RECEIVE ONLY</span><span>LOCAL DATA</span><span>30-SECOND RAW I/Q</span>
+            </div>
           </div>
         </section>
 
-        <section class="receiver panel" aria-label="Live SDR display">
-          <div class="receiver-head">
-            <div><p class="kicker">REAL-TIME ANALYSIS</p><h2>Wideband receiver</h2></div>
-            <div class="digital-readouts">
-              <div class="device-readout"><span>RECEIVER</span><strong id="receiver-name">NOT CONNECTED</strong><small id="receiver-detail">USB DEVICE</small></div>
-              <div><span>WATCH RISE</span><strong id="excess-value">— dB</strong></div>
-              <div><span>DETECTOR</span><strong id="detector-state">STANDBY</strong></div>
-              <div><span>MEMORY</span><strong id="memory-state">EMPTY</strong></div>
-            </div>
-          </div>
-
-          <div class="source-banner" id="source-banner">
-            <strong id="source-title">CHECKING RECEIVER</strong>
-            <span id="source-detail">Waiting for receiver status.</span>
-          </div>
-
-          <div class="tuning-deck" aria-label="Receiver tuning controls">
-            <button class="tune-step" id="tune-down" type="button" aria-label="Tune 200 kilohertz lower">− 200 kHz</button>
-            <label class="frequency-dial"><span>CENTER FREQUENCY</span><span class="dial-input"><input id="center-frequency" type="number" min="88" max="107.5" step="0.1" value="98.500" aria-label="Center frequency in megahertz"><i>MHz</i></span></label>
-            <button class="tune-step" id="tune-up" type="button" aria-label="Tune 200 kilohertz higher">+ 200 kHz</button>
-            <div class="span-control" aria-label="Visible bandwidth">
-              <span>SPAN</span>
-              <button class="fm-span" type="button" data-span="250000">FM audio · 250 kHz</button>
-              <button class="active" type="button" data-span="1024000">1.024 MHz</button>
-              <button type="button" data-span="2048000">2.048 MHz</button>
-            </div>
-            <button class="secondary receiver-button" id="watch-center" type="button">Watch center</button>
-            <button class="secondary receiver-button audio-button" id="audio-button" type="button" disabled>Enable audio</button>
-            <div class="preset-control" aria-label="Frequency presets">
-              <button class="secondary target-preset" type="button" data-frequency="94.9" data-preset-span="250000">Local FM · 94.9</button>
-              <button class="primary target-preset" type="button" data-frequency="98.5" data-preset-span="1024000">Meteor · 98.5</button>
-            </div>
-            <button class="secondary compact retry-button" id="retry-button" type="button" hidden>Retry receiver</button>
-            <input id="sample-rate" type="hidden" value="1024000">
-            <input id="gain" type="hidden" value="auto">
-            <input id="detection-frequency" type="hidden" value="98.500">
-            <input id="threshold" type="hidden" value="8">
-          </div>
-          <div class="control-footer"><span id="span-note">WINDOW 97.988—99.012 MHz</span><span id="audio-note">AUDIO OFF · FOLLOWS WATCH FREQUENCY</span></div>
-          <div class="message" id="message" hidden role="status"></div>
-
-          <div class="plot-label"><span>SPECTRUM / dBFS</span><span>LIVE · VIEW ONLY</span></div>
-          <div class="plot-wrap spectrum-wrap">
-            <canvas id="spectrum" aria-label="Live radio frequency spectrum"></canvas>
-            <div class="canvas-empty" id="spectrum-empty">AWAITING RF STREAM</div>
-          </div>
-          <div class="frequency-axis"><span id="low-frequency">97.988 MHz</span><span id="quarter-frequency">98.244</span><strong id="axis-center">98.500 MHz</strong><span id="three-quarter-frequency">98.756</span><span id="high-frequency">99.012 MHz</span></div>
-
-          <div class="plot-label waterfall-label"><span>WATERFALL / NEWEST SIGNAL AT TOP</span><span>TIME ▼</span></div>
-          <div class="plot-wrap waterfall-wrap">
-            <canvas id="waterfall" aria-label="Live radio waterfall"></canvas>
-            <div class="target-line" id="target-line"><span>WATCH</span></div>
-            <div class="retune-overlay" id="retune-overlay" hidden><span>RETUNING</span><strong id="retune-frequency">98.500 MHz</strong></div>
-          </div>
-          <div class="receiver-foot"><span>USE FM AUDIO · 250 kHz FOR LISTENING</span><span>USE 1.024 MHz FOR METEOR DETECTION</span></div>
-        </section>
-
-        <section class="lower-grid">
-          <article class="panel archive-panel">
-            <div class="section-head"><div><p class="kicker">EVENT ARCHIVE</p><h2>Saved candidates</h2></div><button class="secondary compact" id="refresh-button" type="button">Refresh</button></div>
-            <p class="path" id="event-path">Each event includes a waterfall image, raw 30-second I/Q, and metadata.</p>
-            <div id="event-list" class="event-list"><div class="empty"><span></span><strong>NO CANDIDATES RECORDED</strong><p>The detector archives events after its baseline and buffer are ready.</p></div></div>
+        <section class="readiness" aria-label="Meteor watch readiness">
+          <article class="readiness-card receiver-card">
+            <span class="metric-label">PHYSICAL RECEIVER</span>
+            <strong id="receiver-name">NOT CONNECTED</strong>
+            <small id="receiver-detail">WAITING FOR USB</small>
           </article>
+          <article class="readiness-card">
+            <span class="metric-label">SUGGESTED TARGET
+              <button class="info-trigger" type="button" aria-label="About the suggested target" aria-describedby="tip-target">i</button>
+              <span class="tooltip" id="tip-target" role="tooltip">95.3 MHz is a field-test candidate, not a guarantee. Reject it if it is continuously audible or busy at your antenna.</span>
+            </span>
+            <strong><span id="header-target">95.300</span> <small>MHz</small></strong>
+            <small>KZJH · JACKSON, WY · ~1,298 KM</small>
+          </article>
+          <article class="readiness-card">
+            <span class="metric-label">EVIDENCE MEMORY
+              <button class="info-trigger" type="button" aria-label="About evidence memory" aria-describedby="tip-buffer">i</button>
+              <span class="tooltip" id="tip-buffer" role="tooltip">The newest 30 seconds of raw radio samples stay in RAM. They are written to disk only when a candidate completes.</span>
+            </span>
+            <strong id="buffer-value">0.0 <small>s / 30 s</small></strong>
+            <div class="meter" aria-hidden="true"><i id="buffer-meter"></i></div>
+          </article>
+          <article class="readiness-card">
+            <span class="metric-label">DETECTOR</span>
+            <strong id="detector-state" aria-live="polite">PREPARING</strong>
+            <small id="detector-detail">LEARNING THE BACKGROUND</small>
+          </article>
+        </section>
 
-          <aside class="panel field-guide">
-            <p class="kicker">SIGNATURE GUIDE</p><h2>Reading the waterfall</h2>
-            <div class="signature"><span class="sample short"></span><div><strong>UNDERDENSE</strong><p>Brief, thin vertical trace near the watched frequency.</p></div></div>
-            <div class="signature"><span class="sample long"></span><div><strong>OVERDENSE</strong><p>Longer bright trace that bends, splits, or fades irregularly.</p></div></div>
-            <div class="signature"><span class="sample wide"></span><div><strong>INTERFERENCE</strong><p>Full-width flash, permanent carrier, or perfectly repeating pattern.</p></div></div>
-            <p class="warning">The detector waits for a multi-frame rise and decay and rejects band-wide flashes. Saved events remain unconfirmed candidates, not proof of a meteor.</p>
+        <div class="source-banner" id="source-banner" role="status" aria-live="polite">
+          <strong id="source-title">CHECKING RECEIVER</strong>
+          <span id="source-detail">Waiting for the physical Nooelec receiver.</span>
+        </div>
+        <div class="message" id="message" hidden role="status" aria-live="polite"></div>
+
+        <section class="watch-layout" aria-label="Meteor observation workspace">
+          <aside class="panel setup-panel" aria-labelledby="setup-title">
+            <div class="section-heading">
+              <p class="eyebrow">OBSERVATION PROFILE</p>
+              <h2 id="setup-title">Carmel Valley target</h2>
+              <p>A preliminary forward-scatter path selected from licensed FM transmitters. Calibrate it at your exact antenna location.</p>
+            </div>
+
+            <div class="target-route" aria-label="Suggested transmitter path">
+              <div><span>RECEIVER</span><strong>Carmel Valley, CA</strong></div>
+              <span class="route-line" aria-hidden="true"><i></i></span>
+              <div><span>TRANSMITTER</span><strong>KZJH · 95.3 MHz</strong></div>
+            </div>
+
+            <div class="bearing-card">
+              <div class="compass" aria-hidden="true"><span>N</span><i></i></div>
+              <div><span class="metric-label">YAGI HEADING</span><strong>024° true</strong><p>Horizontal elements · point the boom north-northeast.</p></div>
+            </div>
+
+            <div class="target-input">
+              <div class="target-input-label"><label for="meteor-frequency">METEOR TARGET FREQUENCY</label>
+                <button class="info-trigger" type="button" aria-label="About target frequency" aria-describedby="tip-frequency">i</button>
+                <span class="tooltip" id="tip-frequency" role="tooltip">Use a distant transmitter that is normally absent. Changing this value resets background learning and the 30-second memory.</span>
+              </div>
+              <label class="input-unit" for="meteor-frequency"><input id="meteor-frequency" type="number" min="87.8" max="107.7" step="0.1" value="95.3" inputmode="decimal"><i>MHz</i></label>
+            </div>
+
+            <fieldset class="sensitivity">
+              <legend>METEOR SENSITIVITY
+                <button class="info-trigger" type="button" aria-label="About detector sensitivity" aria-describedby="tip-sensitivity">i</button>
+                <span class="tooltip" id="tip-sensitivity" role="tooltip">Balanced requires an 8 dB rise above the learned background. Sensitive saves more weak candidates; Strict rejects more noise.</span>
+              </legend>
+              <div class="segmented">
+                <button type="button" data-threshold="10">Strict</button>
+                <button type="button" class="active" data-threshold="8">Balanced</button>
+                <button type="button" data-threshold="6">Sensitive</button>
+              </div>
+            </fieldset>
+
+            <div class="setup-actions">
+              <button class="primary" id="calibrate-button" type="button">Calibrate meteor target</button>
+              <button class="secondary" id="watch-button" type="button">Pause meteor watch</button>
+              <button class="secondary" id="retry-button" type="button" hidden>Retry physical receiver</button>
+            </div>
+
+            <div class="calibration-note">
+              <span aria-hidden="true">01</span>
+              <p><strong>Before leaving it armed:</strong> listen briefly during the receiver check. If 95.3 MHz carries continuous programming at this heading, choose another target. The profile holds gain at 28 dB so AGC jumps cannot mimic an echo.</p>
+            </div>
+
+            <input id="sample-rate" type="hidden" value="512000">
+            <input id="gain" type="hidden" value="28">
+            <input id="detection-frequency" type="hidden" value="95.300">
+            <input id="threshold" type="hidden" value="8">
+          </aside>
+
+          <section class="panel live-panel" aria-labelledby="live-title">
+            <header class="live-header">
+              <div>
+                <p class="eyebrow">LIVE METEOR WATCH</p>
+                <h2 id="live-title">Echo power + target waterfall</h2>
+              </div>
+              <div class="live-metrics">
+                <div><span>SIGNAL RISE
+                  <button class="info-trigger" type="button" aria-label="About signal rise" aria-describedby="tip-rise">i</button>
+                  <span class="tooltip tooltip-right" id="tip-rise" role="tooltip">How far the watched channel is above its learned background. A candidate must persist without raising the surrounding band at the same time.</span>
+                </span><strong id="excess-value">— dB</strong></div>
+                <div><span>TRIGGER</span><strong id="threshold-value">8.0 dB</strong></div>
+                <div><span>SESSION</span><strong id="candidate-count">0 candidates</strong></div>
+              </div>
+            </header>
+
+            <figure class="power-figure">
+              <figcaption><span>ECHO POWER / LAST 30 SECONDS</span><span>RISE ABOVE BACKGROUND</span></figcaption>
+              <div class="power-wrap"><canvas id="power-chart" aria-label="Signal rise over the newest 30 seconds"></canvas><span class="power-threshold" id="power-threshold-label">TRIGGER</span></div>
+              <div class="time-axis"><span>−30 s</span><span>−20 s</span><span>−10 s</span><strong>NOW</strong></div>
+            </figure>
+
+            <figure class="waterfall-figure">
+              <figcaption><span>TARGET-CHANNEL WATERFALL · NEWEST ROW AT TOP</span><span>FREQUENCY OVER TIME</span></figcaption>
+              <div class="waterfall-wrap" id="waterfall-wrap">
+                <canvas id="waterfall" aria-label="Live narrow-band radio waterfall for meteor candidate review"></canvas>
+                <div class="watch-marker" id="watch-marker"><span>WATCH MARKER · NOT A SIGNAL</span></div>
+                <div class="center-marker" id="center-marker"><span>RECEIVER CENTER</span></div>
+                <div class="canvas-empty" id="canvas-empty">WAITING FOR PHYSICAL RF DATA</div>
+                <div class="mode-overlay" id="mode-overlay" hidden><strong>METEOR WATCH PAUSED</strong><span>Receiver audio check is active. Candidate detection and saving are disabled.</span></div>
+                <div class="retune-overlay" id="retune-overlay" hidden><span>CALIBRATING TARGET</span><strong id="retune-frequency">95.300 MHz</strong></div>
+              </div>
+              <div class="frequency-axis"><span id="low-frequency">95.204 MHz</span><strong id="axis-target">95.300 MHz TARGET</strong><span id="high-frequency">95.716 MHz</span></div>
+              <p class="canvas-summary" id="canvas-summary">No live meteor-channel data yet.</p>
+            </figure>
+          </section>
+        </section>
+
+        <section class="evidence-layout">
+          <section class="panel archive-panel" aria-labelledby="archive-title">
+            <header class="section-row">
+              <div><p class="eyebrow">EVIDENCE ARCHIVE</p><h2 id="archive-title">Recent unconfirmed candidates</h2></div>
+              <div class="storage-readout"><strong id="storage-used">—</strong><span id="storage-detail">checking local storage</span></div>
+            </header>
+            <p class="section-intro">Each saved candidate keeps raw I/Q, detector metadata, and a waterfall preview. Automatic classification is descriptive—not confirmation.</p>
+            <div id="event-list" class="event-list" aria-live="polite">
+              <div class="empty-state"><span class="empty-orbit" aria-hidden="true"></span><strong>NO PHYSICAL CANDIDATES YET</strong><p>The station will add evidence here after calibration, a full 30-second memory, and a qualifying rise-and-decay.</p></div>
+            </div>
+          </section>
+
+          <aside class="panel field-guide" aria-labelledby="guide-title">
+            <p class="eyebrow">REVIEW GUIDE · ILLUSTRATIONS</p>
+            <h2 id="guide-title">What the detector is looking for</h2>
+            <article class="signature-card">
+              <svg viewBox="0 0 180 64" role="img" aria-label="Illustration of a short meteor-like echo power profile"><path class="grid" d="M0 51H180M0 26H180"/><path class="echo" d="M0 50H57L61 9L67 28L74 39L84 46L101 49H180"/></svg>
+              <div><span>SHORT-TRAIL CANDIDATE</span><p>Fast rise and decay, often only a fraction of a second.</p></div>
+            </article>
+            <article class="signature-card">
+              <svg viewBox="0 0 180 64" role="img" aria-label="Illustration of a longer irregular meteor-like echo"><path class="grid" d="M0 51H180M0 26H180"/><path class="echo" d="M0 50H41L46 10L58 19L68 14L79 26L91 20L105 34L119 31L135 42L157 48H180"/></svg>
+              <div><span>LONG-TRAIL CANDIDATE</span><p>Lasts seconds or longer and may fade irregularly.</p></div>
+            </article>
+            <article class="signature-card interference">
+              <svg viewBox="0 0 180 64" role="img" aria-label="Illustration of broadband interference"><path class="grid" d="M0 51H180M0 26H180"/><path class="echo" d="M0 49L15 47L19 12L22 50L63 48L68 8L71 50L115 49L120 14L124 49L180 47"/></svg>
+              <div><span>LIKELY INTERFERENCE</span><p>Repeating spikes, persistent reception, or the whole band rising together.</p></div>
+            </article>
+            <div class="definition">
+              <strong>What is actually detected?</strong>
+              <p>A distant broadcast may reflect from the ionized trail left as a meteoroid ablates high in the atmosphere. This cannot locate a meteorite or prove an impact.</p>
+            </div>
           </aside>
         </section>
+
+        <details class="panel radio-check" id="radio-check">
+          <summary><span><strong>Receiver audio check</strong><small>Optional hardware test · no meteor visuals</small></span><i aria-hidden="true">+</i></summary>
+          <div class="radio-check-body">
+            <div><p>Play local FM 94.9 to confirm the antenna and receiver can produce intelligible audio. This temporarily pauses meteor monitoring, disables candidate saving, and restores the meteor profile when stopped.</p><span id="audio-note">HARDWARE CHECK OFF · METEOR WATCH ACTIVE</span></div>
+            <button class="secondary audio-button" id="audio-button" type="button" aria-pressed="false" disabled>Play local FM 94.9</button>
+          </div>
+        </details>
       </main>
 
-      <footer><span>METEOR SDR / RASPBERRY PI 4</span><span>LOCAL RF DATA · NO CLOUD TRANSMISSION</span></footer>
+      <footer><span>PASSIVE RF OBSERVATION · NO TRANSMISSION</span><span>RAW EVIDENCE STAYS ON THIS COMPUTER</span></footer>
     </div>
   </body>
 </html>

@@ -44,7 +44,7 @@ class CaptureTests(unittest.TestCase):
             metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["format"], "cu8")
             self.assertEqual(metadata["sample_count"], 250)
-            self.assertEqual(metadata["gain_db"], "auto")
+            self.assertEqual(metadata["gain_db"], 28.0)
             self.assertEqual(metadata["sha256"], result.sha256)
 
 

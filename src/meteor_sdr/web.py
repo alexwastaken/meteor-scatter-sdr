@@ -44,7 +44,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._audio_stream()
             return
         if path == "/api/events":
-            self._json(HTTPStatus.OK, {"events": self.server.monitor.events()})
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "events": self.server.monitor.events(limit_per_source=25),
+                    "storage": self.server.monitor.storage_status(),
+                },
+            )
             return
         if path.startswith("/api/events/previews/"):
             name = unquote(path.removeprefix("/api/events/previews/"))
@@ -66,6 +72,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/app.css": ("app.css", "text/css; charset=utf-8"),
             "/display.css": ("display.css", "text/css; charset=utf-8"),
             "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/assets/meteor-scatter-path.jpg": (
+                "assets/meteor-scatter-path.jpg",
+                "image/jpeg",
+            ),
         }
         asset = static_files.get(path)
         if asset is None:
@@ -201,7 +211,11 @@ def serve_dashboard(
         source_label="simulation" if demo_mode else "hardware",
     )
     server = DashboardServer((host, port), monitor)
-    monitor.start({})
+    startup_payload: dict[str, Any] = {"observation_mode": "meteor"}
+    research_target_hz = 95_300_000
+    if config.lower_edge_hz <= research_target_hz <= config.upper_edge_hz:
+        startup_payload["detection_frequency_hz"] = research_target_hz
+    monitor.start(startup_payload)
     actual_port = server.server_address[1]
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{browser_host}:{actual_port}"

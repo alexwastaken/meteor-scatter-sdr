@@ -70,6 +70,7 @@ class LivePipelineTests(unittest.TestCase):
         ring.append(b"67890")
         self.assertEqual(ring.capacity, 8)
         self.assertEqual(ring.snapshot(), b"34567890")
+        self.assertEqual(b"".join(ring.snapshot_chunks()), b"34567890")
         self.assertEqual(ring.fill_ratio, 1.0)
 
     def test_stream_reads_are_short_and_usb_aligned(self) -> None:
@@ -167,8 +168,19 @@ class LivePipelineTests(unittest.TestCase):
         base = CaptureConfig(center_frequency_hz=100_000_000, sample_rate_hz=1_024_000)
         settings = settings_from_payload(base, {"detection_frequency_hz": 100_100_000})
         self.assertEqual(settings.detection_frequency_hz, 100_100_000)
+        self.assertEqual(settings.observation_mode, "meteor")
+        radio = settings_from_payload(
+            base,
+            {
+                "detection_frequency_hz": 100_100_000,
+                "observation_mode": "radio_check",
+            },
+        )
+        self.assertEqual(radio.observation_mode, "radio_check")
         with self.assertRaises(ConfigurationError):
             settings_from_payload(base, {"detection_frequency_hz": 101_000_000})
+        with self.assertRaises(ConfigurationError):
+            settings_from_payload(base, {"observation_mode": "general_sdr"})
         with self.assertRaises(ConfigurationError):
             settings_from_payload(base, {"download": True})
 
@@ -196,6 +208,7 @@ class LivePipelineTests(unittest.TestCase):
                         duration_seconds=0.24,
                         peak_excess_db=10.0,
                         peak_level_db=-35.0,
+                        peak_reference_excess_db=1.25,
                         profile="underdense_like",
                     ),
                 )
@@ -206,9 +219,37 @@ class LivePipelineTests(unittest.TestCase):
                 self.assertEqual(data_path.read_bytes(), data)
                 self.assertEqual(metadata["classification"], "meteor_candidate_unconfirmed")
                 self.assertEqual(metadata["trigger_excess_db"], 10.0)
+                self.assertEqual(metadata["reference_excess_db"], 1.25)
                 self.assertEqual(metadata["echo_profile"], "underdense_like")
+                self.assertEqual(metadata["observation_mode"], "meteor")
+                self.assertEqual(metadata["observer"]["antenna_type"], "Yagi")
+                self.assertIsNone(metadata["suggested_target"])
                 preview_path = metadata_files[0].parent / metadata["preview_file"]
                 self.assertTrue(preview_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+            finally:
+                monitor.close()
+
+    def test_radio_check_mode_never_arms_or_archives(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            monitor = LiveMonitor(
+                CaptureConfig(
+                    center_frequency_hz=94_900_000,
+                    sample_rate_hz=250_000,
+                    output_dir=Path(temporary_directory),
+                ),
+                source_factory=FakeRadioStream,
+            )
+            try:
+                monitor.start({"observation_mode": "radio_check"})
+                frame = monitor.wait_for_frame(0, timeout=2)
+                self.assertIsNotNone(frame)
+                assert frame is not None
+                self.assertEqual(frame["observation_mode"], "radio_check")
+                self.assertFalse(frame["detector_ready"])
+                self.assertFalse(frame["detector_active"])
+                self.assertFalse(frame["archived"])
+                self.assertEqual(monitor.status()["candidate_count"], 0)
+                self.assertEqual(monitor.events(), [])
             finally:
                 monitor.close()
 
@@ -218,6 +259,10 @@ class LivePipelineTests(unittest.TestCase):
         self.assertEqual(preview[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(int.from_bytes(preview[16:20], "big"), 512)
         self.assertEqual(int.from_bytes(preview[20:24], "big"), 24)
+        self.assertNotEqual(
+            preview,
+            render_waterfall_png(data, height=24, target_fraction=0.25),
+        )
 
     def test_monitor_publishes_a_frame_from_streamed_iq(self) -> None:
         monitor = LiveMonitor(
