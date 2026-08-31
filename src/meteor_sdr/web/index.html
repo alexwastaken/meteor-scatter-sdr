@@ -138,6 +138,18 @@
                 </span><strong id="excess-value">— dB</strong></div>
                 <div><span>TRIGGER</span><strong id="threshold-value">8.0 dB</strong></div>
                 <div><span>SESSION</span><strong id="candidate-count">0 candidates</strong></div>
+                <div class="audio-control">
+                  <button class="speaker-button" id="audio-button" type="button" aria-label="Listen to the selected 95.3 MHz FM target while Meteor Watch continues" aria-describedby="audio-note" aria-pressed="false" disabled>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path class="speaker-body" d="M4 9h4l5-4v14l-5-4H4z"></path>
+                      <path class="speaker-wave wave-one" d="M16 9.2a4 4 0 0 1 0 5.6"></path>
+                      <path class="speaker-wave wave-two" d="M18.7 6.6a7.6 7.6 0 0 1 0 10.8"></path>
+                    </svg>
+                    <span class="audio-button-copy"><span id="audio-action">LISTEN</span><strong id="audio-frequency">95.300 MHz WFM</strong></span>
+                    <span class="listen-led" aria-hidden="true"></span>
+                  </button>
+                  <p class="sr-only" id="audio-note" aria-live="polite">Audio monitor off. Meteor Watch, the graph, and the waterfall remain active while listening.</p>
+                </div>
               </div>
             </header>
 
@@ -201,7 +213,6 @@
                 <div class="center-marker" id="center-marker"><span>RECEIVER CENTER</span></div>
                 <div class="waterfall-time-labels" aria-hidden="true"><span>NOW</span><span>≈30 s AGO</span></div>
                 <div class="canvas-empty" id="canvas-empty">WAITING FOR PHYSICAL RF DATA</div>
-                <div class="mode-overlay" id="mode-overlay" hidden><strong>METEOR WATCH PAUSED</strong><span>The selected-target speaker monitor is active. Candidate detection and saving are disabled.</span></div>
                 <div class="retune-overlay" id="retune-overlay" hidden><span>CALIBRATING TARGET</span><strong id="retune-frequency">95.300 MHz</strong></div>
               </div>
               <div class="frequency-axis"><span id="low-frequency">94.948 MHz</span><strong id="axis-target">95.300 MHz TARGET</strong><span id="high-frequency">95.972 MHz</span></div>
@@ -241,15 +252,5 @@
         <a class="guide-button" href="/meteor-guide.md" target="_blank" rel="noopener">Open meteor guide <span aria-hidden="true">↗</span></a>
       </footer>
     </div>
-    <button class="speaker-button" id="audio-button" type="button" aria-label="Listen to the selected 95.3 MHz FM target" aria-describedby="audio-note" aria-pressed="false" data-tooltip="LISTEN · 95.3 MHz · WFM 250 kHz" disabled>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path class="speaker-body" d="M4 9h4l5-4v14l-5-4H4z"></path>
-        <path class="speaker-wave wave-one" d="M16 9.2a4 4 0 0 1 0 5.6"></path>
-        <path class="speaker-wave wave-two" d="M18.7 6.6a7.6 7.6 0 0 1 0 10.8"></path>
-      </svg>
-      <span class="listen-led" aria-hidden="true"></span>
-      <span class="sr-only">Listen to the selected meteor frequency as wide FM</span>
-    </button>
-    <p class="sr-only" id="audio-note" aria-live="polite">Audio monitor off. Meteor watch is active.</p>
   </body>
 </html>

@@ -149,6 +149,21 @@ class LivePipelineTests(unittest.TestCase):
         self.assertLess(abs(peak_frequency - 1_000), 40)
         self.assertGreater(float(np.sqrt(np.mean(pcm.astype(float) ** 2))), 1_000)
 
+    def test_fm_audio_channel_filter_rejects_out_of_channel_energy(self) -> None:
+        demodulator = FmAudioDemodulator(1_024_000, frequency_offset_hz=-160_000)
+        taps = demodulator._rf_filter_taps
+        positions = np.arange(taps.size)
+
+        def response_at(frequency_hz: int) -> float:
+            response = np.sum(
+                taps * np.exp(-2j * np.pi * frequency_hz * positions / 1_024_000)
+            )
+            return float(abs(response))
+
+        self.assertGreater(response_at(90_000), 0.9)
+        self.assertLess(response_at(128_000), 0.01)
+        self.assertLess(response_at(160_000), 0.01)
+
     def test_fm_audio_removes_the_stereo_pilot_before_downsampling(self) -> None:
         sample_rate = 250_000
         sample_count = 125_000
@@ -617,32 +632,145 @@ class LivePipelineTests(unittest.TestCase):
             self.assertEqual(status["source"], "hardware")
             self.assertTrue(status["receiver"]["connected"])
             self.assertEqual(status["receiver"]["display_name"], "RTL-SDR receiver")
-            self.assertFalse(status["audio"]["available"])
+            self.assertTrue(
+                status["audio"]["available"],
+                "A running meteor profile can provide audio when a client subscribes",
+            )
             self.assertEqual(status["audio"]["sample_rate_hz"], 32_000)
-            with self.assertRaisesRegex(RtlSdrError, "speaker mode"):
-                monitor.subscribe_audio()
         finally:
             monitor.close()
 
-    def test_monitor_publishes_audio_only_for_a_listener(self) -> None:
+    def test_audio_listener_does_not_retune_pause_detection_or_stop_frames(self) -> None:
+        read_started = Event()
+        release_read = Event()
+        sources: list[FakeRadioStream] = []
+
+        class GatedRadioStream(FakeRadioStream):
+            def __init__(self, config: CaptureConfig) -> None:
+                super().__init__(config)
+                self.read_count = 0
+
+            def read(self, size: int) -> bytes:
+                self.read_count += 1
+                if self.read_count == 1:
+                    read_started.set()
+                    while not self.closed and not release_read.wait(0.01):
+                        pass
+                if self.closed:
+                    return b""
+                return super().read(size)
+
+        def factory(config: CaptureConfig) -> GatedRadioStream:
+            source = GatedRadioStream(config)
+            sources.append(source)
+            return source
+
+        completed_candidate = DetectionResult(
+            completed=True,
+            active=False,
+            excess_db=10.0,
+            baseline_db=-50.0,
+            reference_excess_db=0.5,
+            effective_threshold_db=8.0,
+            duration_seconds=0.2,
+            peak_excess_db=10.0,
+            peak_level_db=-40.0,
+            peak_reference_excess_db=0.5,
+            profile="underdense_like",
+        )
         monitor = LiveMonitor(
             CaptureConfig(sample_rate_hz=250_000),
-            source_factory=FakeRadioStream,
+            source_factory=factory,
         )
         subscribed = False
         try:
-            monitor.start({"observation_mode": "radio_check"})
-            frame = monitor.wait_for_frame(0, timeout=2)
-            self.assertIsNotNone(frame)
+            with (
+                patch.object(
+                    CandidateDetector,
+                    "update",
+                    return_value=completed_candidate,
+                ),
+                patch.object(
+                    RollingIqBuffer,
+                    "fill_ratio",
+                    new_callable=PropertyMock,
+                    return_value=1.0,
+                ),
+                patch.object(monitor, "_archive") as archive,
+            ):
+                monitor.start({"observation_mode": "meteor"})
+                self.assertTrue(read_started.wait(2))
+                before = monitor.status()["settings"]
+                sequence = monitor.subscribe_audio()
+                subscribed = True
+                release_read.set()
+
+                item = monitor.wait_for_audio(sequence, timeout=2)
+                self.assertIsNotNone(item)
+                assert item is not None
+                next_sequence, pcm = item
+                self.assertGreater(next_sequence, sequence)
+                self.assertGreater(len(pcm), 0)
+                self.assertEqual(len(pcm) % 2, 0)
+
+                frame = monitor.wait_for_frame(0, timeout=2)
+                self.assertIsNotNone(frame)
+                assert frame is not None
+                self.assertEqual(frame["observation_mode"], "meteor")
+                self.assertTrue(frame["archived"])
+                self.assertGreaterEqual(monitor.status()["candidate_count"], 1)
+                archive.assert_called()
+                self.assertEqual(monitor.status()["settings"], before)
+                self.assertEqual(sources[0].tuned, [])
+
+                following = monitor.wait_for_frame(frame["sequence"], timeout=2)
+                self.assertIsNotNone(following)
+                assert following is not None
+                self.assertEqual(following["observation_mode"], "meteor")
+        finally:
+            release_read.set()
+            if subscribed:
+                monitor.unsubscribe_audio()
+            monitor.close()
+
+    def test_audio_queue_preserves_short_pcm_bursts_in_order(self) -> None:
+        config = CaptureConfig(sample_rate_hz=250_000)
+        monitor = LiveMonitor(config, source_factory=FakeRadioStream)
+        subscribed = False
+        try:
+            with monitor._condition:
+                monitor._settings = settings_from_payload(
+                    config,
+                    {"observation_mode": "meteor"},
+                )
+                monitor._state = "running"
+
             sequence = monitor.subscribe_audio()
             subscribed = True
-            item = monitor.wait_for_audio(sequence, timeout=2)
-            self.assertIsNotNone(item)
-            assert item is not None
-            next_sequence, pcm = item
-            self.assertGreater(next_sequence, sequence)
-            self.assertGreater(len(pcm), 0)
-            self.assertEqual(len(pcm) % 2, 0)
+            chunks = [
+                b"\x01\x00" * 4_096,
+                b"\x02\x00" * 4_096,
+                b"\x03\x00" * 4_096,
+            ]
+            for chunk in chunks:
+                monitor._publish_audio(chunk)
+
+            received = bytearray()
+            after_sequence = sequence
+            for _ in range(len(chunks)):
+                item = monitor.wait_for_audio(after_sequence, timeout=0.05)
+                if item is None:
+                    break
+                after_sequence, pcm = item
+                received.extend(pcm)
+                if len(received) >= sum(map(len, chunks)):
+                    break
+
+            self.assertEqual(
+                bytes(received),
+                b"".join(chunks),
+                "A brief producer burst must not overwrite earlier unsent PCM chunks",
+            )
         finally:
             if subscribed:
                 monitor.unsubscribe_audio()

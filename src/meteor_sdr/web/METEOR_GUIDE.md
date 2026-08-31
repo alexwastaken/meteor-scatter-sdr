@@ -222,14 +222,13 @@ force the interface to redraw every radio block. The 160 kHz tuning offset keeps
    connected.
 3. Mount the Yagi with its elements horizontal.
 4. Aim the boom approximately 024 degrees true.
-5. Click the speaker button briefly to listen to the selected target using the
-   250 kHz wide-FM monitor.
+5. Click **Listen** in the live panel to hear the selected target as filtered
+   mono wide FM.
 6. Expect hiss or weak noise when the channel is suitably absent. If continuous
    recognizable speech or music is present, choose another target frequency or
    antenna heading.
-7. Stop the speaker monitor. Meteor Watch restores its full capture span,
-   restarts background learning, and clears and refills the 30-second evidence
-   memory.
+7. Stop audio when finished. The graph, waterfall, detector, and evidence
+   memory have continued running throughout the listening check.
 8. Select **Calibrate meteor target** after any target, gain, cable, or antenna
    change.
 9. Wait until the detector and evidence memory both report ready.
@@ -242,9 +241,12 @@ repeating interference.
 
 ## The selected-target speaker monitor
 
-The floating speaker button temporarily listens to the currently selected FM
-target, 95.3 MHz by default. It uses a 250 kHz RF capture span: enough to cover
-one 200 kHz U.S. FM broadcast channel with a small amount of margin.
+The **Listen** control is inside the live Meteor Watch panel. It plays the
+currently selected FM target, 95.3 MHz by default, as filtered mono wide FM.
+Audio is extracted from the same 1.024 MHz RF capture used by the meteor
+displays and detector, so starting audio does not retune the SDR.
+Meteor Watch continues while you listen: the graph, waterfall, detector, and
+30-second RF memory all remain active.
 
 Turn the computer volume down before starting. With no receivable station,
 wide-FM normally produces hiss rather than literal silence. A possible
@@ -257,13 +259,13 @@ absent. Continuous intelligible programming means that a local, co-channel, or
 persistently propagated station is present and the frequency is unsuitable for
 simple transient monitoring at that antenna heading.
 
-While speaker mode is active:
+While audio is active:
 
-- Meteor Watch is paused.
-- Candidate detection and saving are disabled.
-- No event heard during listening is archived automatically.
-- Stopping audio restores the full meteor profile and begins fresh calibration
-  and 30-second buffering.
+- The graph and waterfall continue updating.
+- Candidate detection, saving, calibration, and the 30-second memory continue.
+- Audio itself is not saved, but the normal raw candidate evidence can still be
+  archived if the detector completes an event.
+- Stopping audio does not reset or discard the observation session.
 
 Audio alone cannot confirm a meteor echo. Aircraft, tropospheric propagation,
 other same-frequency transmitters, and local interference can all create brief

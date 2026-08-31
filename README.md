@@ -26,10 +26,9 @@ a meteor.
 - Stores receiver, antenna, observer, target, duration, rise, and integrity
   metadata with new candidates.
 - Uses a fixed 28 dB tuner gain so AGC jumps cannot resemble meteor echoes.
-- Provides a 250 kHz wide-FM speaker mode for the selected target frequency.
-  Speaker mode pauses meteor detection and saving; stopping it restores the
-  full meteor profile and restarts calibration and the 30-second evidence
-  memory.
+- Plays filtered mono wide-FM audio from the selected target without retuning
+  or pausing the graph, waterfall, detector, candidate saving, or 30-second
+  evidence memory.
 - Keeps simulated training candidates visually separate from physical RF data.
 
 Automatic candidates are never labeled “confirmed meteor.” Aircraft,
@@ -169,24 +168,24 @@ RTL-SDR center artifact may appear.
 
 ## Selected-target speaker monitor
 
-The floating speaker button temporarily tunes a 250 kHz wide-FM receiver to the
-currently selected target frequency, 95.3 MHz by default. A U.S. FM broadcast
-channel is 200 kHz wide, so this span covers the complete channel with a small
-margin on each side.
+The **Listen** control inside the live Meteor Watch header plays the currently
+selected target frequency, 95.3 MHz by default, as filtered mono wide FM. It
+uses the same 1.024 MHz RF stream as the detector and extracts the watched FM
+channel in software, so the receiver does not retune when audio starts.
 
 Start with the computer volume low. On a suitable target, the usual sound is FM
 hiss or weak noise—not necessarily silence. A brief reflected broadcast might
 sound like a fragment of speech or music, a fluttering burst, or a pop. Do not
 expect every event to produce a clean “ping.”
 
-While speaker mode is active:
+While audio is active:
 
-- the waterfall and power display are paused;
-- meteor detection and candidate saving are disabled;
+- the waterfall and power graph keep updating;
+- meteor detection, candidate saving, and the 30-second memory keep running;
 - the browser plays filtered mono wide-FM audio but does not save it as
   candidate evidence;
-- stopping the speaker restores the 1.024 MHz meteor profile and restarts
-  detector calibration and the 30-second evidence memory.
+- a bounded server queue plus a browser playback cushion absorbs normal local
+  scheduling delays instead of dropping short PCM blocks.
 
 Continuous understandable programming is a reason to reject the target, not a
 meteor detection. A brief sound is also not confirmation: aircraft, changing

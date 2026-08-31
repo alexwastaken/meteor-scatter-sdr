@@ -157,37 +157,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if status["state"] != "running":
             self._json(HTTPStatus.CONFLICT, {"error": "receiver is not running"})
             return
-        if status["settings"]["observation_mode"] != "radio_check":
-            self._json(
-                HTTPStatus.CONFLICT,
-                {"error": "turn on the speaker before requesting receiver audio"},
-            )
-            return
         try:
             sequence = self.server.monitor.subscribe_audio()
         except RtlSdrError as exc:
             self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
             return
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Cache-Control", "no-cache, no-store")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.send_header("X-Audio-Format", "pcm_s16le_mono")
-        self.send_header("X-Audio-Sample-Rate", "32000")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
         try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Cache-Control", "no-cache, no-store")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("X-Audio-Format", "pcm_s16le_mono")
+            self.send_header("X-Audio-Sample-Rate", "32000")
+            self.send_header("X-Audio-Packet-Milliseconds", "128")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
             while True:
                 item = self.server.monitor.wait_for_audio(sequence, timeout=2)
                 if item is None:
                     current = self.server.monitor.status()
-                    if (
-                        current["state"] != "running"
-                        or current["settings"]["observation_mode"]
-                        != "radio_check"
-                        or not current["audio"]["available"]
-                    ):
+                    if current["state"] != "running" or not current["audio"]["available"]:
                         break
                     continue
                 sequence, pcm = item
@@ -198,7 +188,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            self.close_connection = True
         finally:
             self.server.monitor.unsubscribe_audio()
 

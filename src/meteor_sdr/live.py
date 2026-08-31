@@ -28,9 +28,13 @@ DISPLAY_FRAME_RATE_HZ = 12.5
 RETUNE_FLUSH_SECONDS = 0.08
 AUDIO_SAMPLE_RATE_HZ = 32_000
 AUDIO_RF_RATE_HZ = 256_000
+AUDIO_RF_CHANNEL_CUTOFF_HZ = 100_000
+AUDIO_RF_FILTER_TAPS = 129
 AUDIO_DEEMPHASIS_SECONDS = 75e-6
 AUDIO_LOWPASS_HZ = 12_500
 AUDIO_FILTER_TAPS = 129
+AUDIO_PACKET_BYTES = 8_192
+AUDIO_QUEUE_PACKETS = 24
 
 
 def stream_read_size(sample_rate_hz: int) -> int:
@@ -65,6 +69,24 @@ class FmAudioDemodulator:
         self.rf_rate_hz = sample_rate_hz / self.rf_decimation
         self.audio_decimation = max(1, round(self.rf_rate_hz / output_rate_hz))
         self.intermediate_audio_rate_hz = self.rf_rate_hz / self.audio_decimation
+        rf_positions = np.arange(AUDIO_RF_FILTER_TAPS) - (
+            AUDIO_RF_FILTER_TAPS - 1
+        ) / 2
+        rf_normalized_cutoff = min(
+            AUDIO_RF_CHANNEL_CUTOFF_HZ,
+            self.rf_rate_hz * 0.43,
+        ) / sample_rate_hz
+        rf_taps = (
+            2.0
+            * rf_normalized_cutoff
+            * np.sinc(2.0 * rf_normalized_cutoff * rf_positions)
+            * np.hamming(AUDIO_RF_FILTER_TAPS)
+        )
+        self._rf_filter_taps = (rf_taps / rf_taps.sum()).astype(np.float32)
+        self._rf_filter_state = np.zeros(
+            AUDIO_RF_FILTER_TAPS - 1, dtype=np.complex64
+        )
+        self._rf_decimation_position = 0
         positions = np.arange(AUDIO_FILTER_TAPS) - (AUDIO_FILTER_TAPS - 1) / 2
         normalized_cutoff = AUDIO_LOWPASS_HZ / self.rf_rate_hz
         taps = (
@@ -99,8 +121,20 @@ class FmAudioDemodulator:
                 (self._mixer_phase + phase_step * samples.size) % (2.0 * math.pi)
             )
 
-        usable = samples.size - samples.size % self.rf_decimation
-        baseband = samples[:usable].reshape(-1, self.rf_decimation).mean(axis=1)
+        rf_filter_input = np.concatenate((self._rf_filter_state, samples))
+        rf_filtered = np.convolve(
+            rf_filter_input,
+            self._rf_filter_taps,
+            mode="valid",
+        )
+        self._rf_filter_state = rf_filter_input[-(AUDIO_RF_FILTER_TAPS - 1) :]
+        first_rf_output = (-self._rf_decimation_position) % self.rf_decimation
+        baseband = rf_filtered[first_rf_output :: self.rf_decimation]
+        self._rf_decimation_position = (
+            self._rf_decimation_position + rf_filtered.size
+        ) % self.rf_decimation
+        if baseband.size <= 0:
+            return b""
         if self._previous_iq is not None:
             baseband = np.concatenate(
                 (np.asarray([self._previous_iq], dtype=np.complex64), baseband)
@@ -475,6 +509,10 @@ class LiveMonitor:
         self._frame: dict[str, Any] | None = None
         self._audio_sequence = 0
         self._audio_chunk: bytes | None = None
+        self._audio_chunks: deque[tuple[int, bytes]] = deque(
+            maxlen=AUDIO_QUEUE_PACKETS
+        )
+        self._audio_pending = bytearray()
         self._audio_clients = 0
         self._buffer_seconds = 0.0
         self._candidate_count = 0
@@ -507,6 +545,9 @@ class LiveMonitor:
             self._retuning = False
             self._error = None
             self._frame = None
+            self._audio_chunk = None
+            self._audio_chunks.clear()
+            self._audio_pending.clear()
             self._buffer_seconds = 0.0
             self._candidate_count = 0
             self._started_at = datetime.now(timezone.utc).isoformat()
@@ -570,6 +611,8 @@ class LiveMonitor:
                         self._radio_revision += 1
                         self._buffer_seconds = 0.0
                         self._audio_chunk = None
+                        self._audio_chunks.clear()
+                        self._audio_pending.clear()
                     self._condition.notify_all()
                 if rollback_error is not None:
                     if stream is not None:
@@ -586,6 +629,8 @@ class LiveMonitor:
                 self._radio_revision += 1
                 self._buffer_seconds = 0.0
                 self._audio_chunk = None
+                self._audio_chunks.clear()
+                self._audio_pending.clear()
                 self._retuning = False
                 self._condition.notify_all()
                 return self.status_locked()
@@ -604,6 +649,9 @@ class LiveMonitor:
                 raise ConfigurationError("watch frequency must be inside the displayed span")
             self._settings = replace(self._settings, detection_frequency_hz=frequency)
             self._settings_revision += 1
+            self._audio_chunk = None
+            self._audio_chunks.clear()
+            self._audio_pending.clear()
             return self.status_locked()
 
     def close(self) -> None:
@@ -661,15 +709,21 @@ class LiveMonitor:
     def subscribe_audio(self) -> int:
         with self._condition:
             if not self._audio_available_locked():
-                raise RtlSdrError(
-                    "receiver audio is available only while speaker mode is active"
-                )
+                raise RtlSdrError("receiver audio requires a running receiver")
+            if self._audio_clients == 0:
+                self._audio_chunk = None
+                self._audio_chunks.clear()
+                self._audio_pending.clear()
             self._audio_clients += 1
             return self._audio_sequence
 
     def unsubscribe_audio(self) -> None:
         with self._condition:
             self._audio_clients = max(0, self._audio_clients - 1)
+            if self._audio_clients == 0:
+                self._audio_chunk = None
+                self._audio_chunks.clear()
+                self._audio_pending.clear()
 
     def wait_for_audio(
         self, after_sequence: int, timeout: float = 2.0
@@ -677,13 +731,14 @@ class LiveMonitor:
         with self._condition:
             self._condition.wait_for(
                 lambda: self._audio_sequence > after_sequence
-                or not self._audio_available_locked(),
+                or self._state != "running",
                 timeout=timeout,
             )
-            if not self._audio_available_locked():
+            if self._state != "running":
                 return None
-            if self._audio_sequence > after_sequence and self._audio_chunk is not None:
-                return self._audio_sequence, self._audio_chunk
+            for sequence, chunk in self._audio_chunks:
+                if sequence > after_sequence:
+                    return sequence, chunk
             return None
 
     def _audio_available_locked(self) -> bool:
@@ -691,7 +746,6 @@ class LiveMonitor:
             self._state == "running"
             and not self._retuning
             and self._settings is not None
-            and self._settings.observation_mode == "radio_check"
         )
 
     def _publish_audio(self, pcm: bytes) -> None:
@@ -700,9 +754,17 @@ class LiveMonitor:
         with self._condition:
             if not self._audio_available_locked() or not self._audio_clients:
                 return
-            self._audio_sequence += 1
-            self._audio_chunk = pcm
-            self._condition.notify_all()
+            self._audio_pending.extend(pcm)
+            published = False
+            while len(self._audio_pending) >= AUDIO_PACKET_BYTES:
+                packet = bytes(self._audio_pending[:AUDIO_PACKET_BYTES])
+                del self._audio_pending[:AUDIO_PACKET_BYTES]
+                self._audio_sequence += 1
+                self._audio_chunk = packet
+                self._audio_chunks.append((self._audio_sequence, packet))
+                published = True
+            if published:
+                self._condition.notify_all()
 
     def events(self, limit_per_source: int = 25) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -850,7 +912,7 @@ class LiveMonitor:
                     discard_bytes = max(0, discard_bytes - len(block))
                     continue
                 ring.append(block)
-                if settings.observation_mode == "radio_check" and self._audio_clients:
+                if self._audio_clients:
                     self._publish_audio(audio_demodulator.process(block))
                 if len(block) < FFT_SIZE * 2:
                     continue

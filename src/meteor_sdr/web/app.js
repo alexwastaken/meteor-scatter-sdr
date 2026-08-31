@@ -2,10 +2,11 @@ const $ = (selector) => document.querySelector(selector);
 
 const METEOR_SPAN_HZ = 1_024_000;
 const METEOR_CENTER_OFFSET_HZ = 160_000;
-const RADIO_CHECK_SPAN_HZ = 250_000;
 const FM_LOW_HZ = 87_500_000;
 const FM_HIGH_HZ = 108_000_000;
 const POWER_WINDOW_MS = 30_000;
+const AUDIO_START_LEAD_SECONDS = 0.25;
+const AUDIO_MAX_LEAD_SECONDS = 0.65;
 
 const elements = {
   connection: $("#connection"),
@@ -41,13 +42,14 @@ const elements = {
   centerMarker: $("#center-marker"),
   canvasEmpty: $("#canvas-empty"),
   canvasSummary: $("#canvas-summary"),
-  modeOverlay: $("#mode-overlay"),
   retuneOverlay: $("#retune-overlay"),
   retuneFrequency: $("#retune-frequency"),
   low: $("#low-frequency"),
   targetAxis: $("#axis-target"),
   high: $("#high-frequency"),
   audioButton: $("#audio-button"),
+  audioAction: $("#audio-action"),
+  audioFrequency: $("#audio-frequency"),
   audioNote: $("#audio-note"),
   tooltips: [...document.querySelectorAll(".info-trigger")],
   visualInfoButtons: [...document.querySelectorAll(".visual-info-button")],
@@ -57,7 +59,6 @@ let currentStatus = null;
 let monitorState = "stopped";
 let pendingFrame = null;
 let renderedSequence = 0;
-let radioCheckActive = false;
 let hardwareRetryBusy = false;
 let lastHardwareRetry = 0;
 let waterfallStarted = false;
@@ -68,7 +69,6 @@ let audioContext = null;
 let audioGainNode = null;
 let audioAbort = null;
 let audioNextTime = 0;
-let meteorSettingsBeforeAudio = null;
 let audioTransitionBusy = false;
 
 function mhz(value, digits = 3) {
@@ -124,31 +124,6 @@ function meteorPayload() {
     detection_frequency_hz: target,
     threshold_db: Number(elements.threshold.value),
     observation_mode: "meteor",
-  };
-}
-
-function meteorSettingsFromStatus(status) {
-  const settings = status?.settings;
-  if (!settings || settings.observation_mode !== "meteor") return null;
-  return {
-    center_frequency_hz: Number(settings.center_frequency_hz),
-    sample_rate_hz: Number(settings.sample_rate_hz),
-    gain_db: settings.gain_db,
-    detection_frequency_hz: Number(settings.detection_frequency_hz),
-    threshold_db: Number(settings.threshold_db),
-    observation_mode: "meteor",
-  };
-}
-
-function radioPayload() {
-  const target = meteorTargetHz();
-  return {
-    center_frequency_hz: target,
-    sample_rate_hz: RADIO_CHECK_SPAN_HZ,
-    gain_db: elements.gain.value === "auto" ? "auto" : Number(elements.gain.value),
-    detection_frequency_hz: target,
-    threshold_db: Number(elements.threshold.value),
-    observation_mode: "radio_check",
   };
 }
 
@@ -281,7 +256,6 @@ function applyStatus(status) {
   currentStatus = status;
   monitorState = status.state;
   const settings = status.settings || {};
-  radioCheckActive = settings.observation_mode === "radio_check";
   const live = status.state === "running" || status.state === "starting";
   applyReceiverStatus(status);
   updateDetectorStatus(status);
@@ -296,15 +270,12 @@ function applyStatus(status) {
     elements.detection.value = mhz(target);
     elements.headerTarget.textContent = mhz(target);
   }
-  if (!radioCheckActive) {
-    elements.sampleRate.value = String(settings.sample_rate_hz || METEOR_SPAN_HZ);
-    setSensitivity(settings.threshold_db || 8);
-  }
+  elements.sampleRate.value = String(settings.sample_rate_hz || METEOR_SPAN_HZ);
+  setSensitivity(settings.threshold_db || 8);
 
-  elements.modeOverlay.hidden = !radioCheckActive;
-  elements.canvasEmpty.hidden = live || radioCheckActive;
-  elements.calibrate.disabled = !live || radioCheckActive;
-  elements.watch.disabled = radioCheckActive || status.state === "starting";
+  elements.canvasEmpty.hidden = live;
+  elements.calibrate.disabled = !live;
+  elements.watch.disabled = status.state === "starting";
   elements.watch.textContent = status.state === "running" ? "Pause meteor watch" : "Start meteor watch";
   elements.retry.hidden = status.state !== "error";
   updateAudioUi();
@@ -332,7 +303,6 @@ const heatLut = Array.from({ length: 256 }, (_, index) => {
 });
 
 function drawWaterfall(frame) {
-  if (radioCheckActive) return;
   const resized = ensureCanvasSize(elements.waterfall);
   const canvas = elements.waterfall;
   const context = canvas.getContext("2d", { alpha: false });
@@ -443,12 +413,7 @@ function drawPowerChart() {
 }
 
 function acceptFrame(frame) {
-  if (radioCheckActive || frame.observation_mode === "radio_check") {
-    elements.modeOverlay.hidden = false;
-    return;
-  }
   elements.canvasEmpty.hidden = true;
-  elements.modeOverlay.hidden = true;
   drawWaterfall(frame);
   const timestamp = Date.parse(frame.timestamp_utc) || Date.now();
   powerHistory.push({
@@ -488,7 +453,6 @@ function animationLoop() {
 }
 
 async function calibrateMeteorTarget(message = "Meteor target applied") {
-  if (radioCheckActive) return;
   const payload = meteorPayload();
   if (payload.detection_frequency_hz < FM_LOW_HZ || payload.detection_frequency_hz > FM_HIGH_HZ) {
     showMessage("Choose a target inside the 87.5–108 MHz FM band.", true);
@@ -557,10 +521,13 @@ function schedulePcm(bytes, sampleRate) {
   const channel = buffer.getChannelData(0);
   const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
   for (let index = 0; index < sampleCount; index += 1) channel[index] = view.getInt16(index * 2, true) / 32768;
+  if (audioNextTime > audioContext.currentTime + AUDIO_MAX_LEAD_SECONDS) return;
   const source = audioContext.createBufferSource();
   source.buffer = buffer;
   source.connect(audioGainNode);
-  if (audioNextTime <= audioContext.currentTime + .005) audioNextTime = audioContext.currentTime + .1;
+  if (audioNextTime <= audioContext.currentTime + .02) {
+    audioNextTime = audioContext.currentTime + AUDIO_START_LEAD_SECONDS;
+  }
   source.start(audioNextTime);
   audioNextTime += buffer.duration;
 }
@@ -594,34 +561,10 @@ async function streamAudio(signal) {
   } catch (error) {
     if (error.name !== "AbortError") {
       const detail = error.message || "Receiver audio stopped";
-      const shouldRestore = radioCheckActive && monitorState === "running";
-      if (shouldRestore) {
-        audioTransitionBusy = true;
-        updateAudioUi();
-      }
       await stopAudio();
-      if (shouldRestore) {
-        try {
-          const restore = meteorSettingsBeforeAudio || meteorPayload();
-          applyStatus(await postSettings("/api/live/tune", restore));
-          radioCheckActive = false;
-          meteorSettingsBeforeAudio = null;
-          resetVisuals();
-          showMessage(`${detail}. Meteor Watch was restored safely.`, true);
-        } catch (restoreError) {
-          showMessage(
-            `${detail}. Meteor Watch could not be restored: ${restoreError.message}`,
-            true,
-          );
-        } finally {
-          audioTransitionBusy = false;
-          updateAudioUi();
-        }
-      } else {
-        audioTransitionBusy = false;
-        updateAudioUi();
-        showMessage(detail, true);
-      }
+      audioTransitionBusy = false;
+      updateAudioUi();
+      showMessage(`${detail}. Meteor Watch continued without interruption.`, true);
     }
   }
 }
@@ -629,7 +572,11 @@ async function streamAudio(signal) {
 async function prepareAudio() {
   const AudioApi = window.AudioContext || window.webkitAudioContext;
   if (!AudioApi) throw new Error("This browser does not support live receiver audio");
-  audioContext = new AudioApi();
+  try {
+    audioContext = new AudioApi({ latencyHint: "playback" });
+  } catch (error) {
+    audioContext = new AudioApi();
+  }
   await audioContext.resume();
   audioGainNode = audioContext.createGain();
   audioGainNode.gain.value = .4;
@@ -660,119 +607,61 @@ async function stopAudio() {
 
 function updateAudioUi() {
   const activeTarget = Number(currentStatus?.settings?.detection_frequency_hz);
-  const targetHz = radioCheckActive && Number.isFinite(activeTarget)
+  const targetHz = Number.isFinite(activeTarget)
     ? activeTarget
     : meteorTargetHz();
   const targetLabel = frequency(targetHz);
-  const playing = radioCheckActive && audioEnabled;
+  const playing = audioEnabled;
   const live = monitorState === "running";
-  elements.audioButton.classList.toggle("active", radioCheckActive);
+  elements.audioButton.classList.toggle("active", playing);
   elements.audioButton.classList.toggle("playing", playing);
   elements.audioButton.classList.toggle("busy", audioTransitionBusy);
   elements.audioButton.disabled = !live || audioTransitionBusy;
-  elements.audioButton.setAttribute("aria-pressed", String(radioCheckActive));
+  elements.audioButton.setAttribute("aria-pressed", String(playing));
   elements.audioButton.setAttribute(
     "aria-label",
     audioTransitionBusy
-      ? "Changing receiver audio mode"
-      : radioCheckActive
-      ? `Stop listening to ${targetLabel} and restore meteor watch`
-      : `Listen to the selected ${targetLabel} FM target`,
+      ? "Changing live receiver audio"
+      : playing
+      ? `Stop listening to ${targetLabel}; Meteor Watch will continue`
+      : `Listen to ${targetLabel} while Meteor Watch continues`,
   );
-  elements.audioButton.title = audioTransitionBusy
-    ? "Changing receiver mode"
-    : radioCheckActive
-    ? `Stop ${targetLabel} audio and restore meteor watch`
-    : `Listen to ${targetLabel} as wide FM using a 250 kHz RF span`;
-  elements.audioButton.dataset.tooltip = audioTransitionBusy
-    ? "TUNING RECEIVER…"
-    : radioCheckActive
-    ? `${playing ? "LISTENING" : "AUDIO MODE"} · ${targetLabel} · CLICK TO RESTORE WATCH`
-    : `LISTEN · ${targetLabel} · WFM 250 kHz`;
+  elements.audioButton.title = playing
+    ? `Stop ${targetLabel} wide-FM audio`
+    : `Listen to ${targetLabel} wide-FM audio without pausing the displays`;
+  elements.audioAction.textContent = audioTransitionBusy
+    ? "STARTING…"
+    : playing
+    ? "STOP AUDIO"
+    : "LISTEN";
+  elements.audioFrequency.textContent = `${targetLabel} WFM`;
   elements.audioNote.textContent = audioTransitionBusy
-    ? "Changing receiver mode."
-    : radioCheckActive
-    ? `${targetLabel} AUDIO ${playing ? "PLAYING" : "ACTIVE"}. Meteor detection and candidate saving are paused.`
-    : `Audio monitor off. Meteor watch is active. The speaker uses a 250 kHz wide-FM span around ${targetLabel}.`;
+    ? "Starting live receiver audio."
+    : playing
+    ? `${targetLabel} audio is playing. Meteor detection, the graph, and the waterfall remain active.`
+    : `Audio monitor off. Meteor Watch remains active at ${targetLabel}.`;
 }
 
-async function toggleRadioCheck() {
+async function toggleAudio() {
   clearMessage();
-  if (radioCheckActive) {
-    audioTransitionBusy = true;
-    updateAudioUi();
-    try {
-      await stopAudio();
-      const restore = meteorSettingsBeforeAudio || meteorPayload();
-      applyStatus(await postSettings("/api/live/tune", restore));
-      radioCheckActive = false;
-      meteorSettingsBeforeAudio = null;
-      resetVisuals();
-      updateAudioUi();
-      showMessage("Meteor target restored. Background learning and evidence memory restarted.");
-    } catch (error) {
-      showMessage(error.message, true);
-    } finally {
-      audioTransitionBusy = false;
-      updateAudioUi();
-    }
-    return;
-  }
   if (audioTransitionBusy) return;
   audioTransitionBusy = true;
   updateAudioUi();
   try {
-    const payload = radioPayload();
-    const targetLabel = frequency(payload.detection_frequency_hz);
-    meteorSettingsBeforeAudio = meteorSettingsFromStatus(currentStatus) || meteorPayload();
-    await prepareAudio();
-    applyStatus(await postSettings("/api/live/tune", payload));
-    radioCheckActive = true;
-    beginAudio();
-    showMessage(`Listening to the monitored ${targetLabel} FM target with a 250 kHz RF span. Meteor detection and candidate saving are paused; continuous clear programming means this is not a quiet meteor target.`);
+    if (audioEnabled) {
+      await stopAudio();
+      showMessage("Receiver audio stopped. Meteor Watch and the live displays kept running.");
+    } else {
+      const targetLabel = frequency(
+        Number(currentStatus?.settings?.detection_frequency_hz) || meteorTargetHz(),
+      );
+      await prepareAudio();
+      beginAudio();
+      showMessage(`Listening to ${targetLabel} as wide FM. The waterfall, graph, detector, and 30-second evidence memory are still running.`);
+    }
   } catch (error) {
-    const detail = error.message || "Receiver audio could not start";
     await stopAudio();
-    let restored = false;
-    try {
-      const status = await request("/api/live/status");
-      applyStatus(status);
-      if (
-        status.settings?.observation_mode === "radio_check"
-        && meteorSettingsBeforeAudio
-      ) {
-        applyStatus(
-          await postSettings("/api/live/tune", meteorSettingsBeforeAudio),
-        );
-        resetVisuals();
-        restored = true;
-      } else if (status.settings?.observation_mode === "meteor") {
-        restored = true;
-      }
-    } catch (statusError) {
-      if (meteorSettingsBeforeAudio) {
-        try {
-          applyStatus(
-            await postSettings("/api/live/tune", meteorSettingsBeforeAudio),
-          );
-          resetVisuals();
-          restored = true;
-        } catch (restoreError) {
-          showMessage(
-            `${detail}. Meteor Watch recovery also failed: ${restoreError.message}`,
-            true,
-          );
-        }
-      }
-    }
-    if (restored) {
-      radioCheckActive = false;
-      meteorSettingsBeforeAudio = null;
-      showMessage(`${detail}. Meteor Watch was restored safely.`, true);
-    } else if (!elements.message.classList.contains("error")) {
-      showMessage(detail, true);
-    }
-    updateAudioUi();
+    showMessage(error.message || "Receiver audio could not start", true);
   } finally {
     audioTransitionBusy = false;
     updateAudioUi();
@@ -830,12 +719,12 @@ document.addEventListener("keydown", (event) => {
 elements.calibrate.addEventListener("click", () => calibrateMeteorTarget());
 elements.watch.addEventListener("click", toggleMeteorWatch);
 elements.retry.addEventListener("click", () => calibrateMeteorTarget("Physical receiver retry started"));
-elements.audioButton.addEventListener("click", toggleRadioCheck);
+elements.audioButton.addEventListener("click", toggleAudio);
 elements.meteorFrequency.addEventListener("input", updateAudioUi);
 elements.sensitivityButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setSensitivity(Number(button.dataset.threshold));
-    if (monitorState === "running" && !radioCheckActive) calibrateMeteorTarget(`${button.textContent} meteor sensitivity selected`);
+    if (monitorState === "running") calibrateMeteorTarget(`${button.textContent} meteor sensitivity selected`);
   });
 });
 
@@ -854,21 +743,6 @@ stream.onerror = () => {
     elements.connectionLabel.textContent = "RF STREAM RECONNECTING";
   }
 };
-
-window.addEventListener("pagehide", () => {
-  if (
-    radioCheckActive
-    && monitorState === "running"
-    && meteorSettingsBeforeAudio
-  ) {
-    fetch("/api/live/tune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(meteorSettingsBeforeAudio),
-      keepalive: true,
-    }).catch(() => {});
-  }
-});
 
 setSensitivity(8);
 updateAudioUi();
