@@ -63,7 +63,8 @@ While Meteor Watch is running, the app:
    the watched channel than in the surrounding band.
 7. Waits for the signal to return toward the background.
 8. If the 30-second memory is full and the event passes the basic checks, saves
-   the newest 30 seconds as an unconfirmed candidate.
+   the newest 30 seconds as an unconfirmed raw-data candidate. It does not save
+   a waterfall image.
 
 The detector analyzes at up to 50 updates per second. The browser paints at
 about 12.5 frames per second to keep the Mac and Raspberry Pi interface smooth.
@@ -137,13 +138,12 @@ center artifact for an echo.
 
 ## What gets saved
 
-For every automatic candidate, the app creates three local files in
+For every automatic candidate, the app creates two local files in
 `captures/events/`:
 
 ```text
 meteor_candidate_....cu8
 meteor_candidate_....cu8.json
-meteor_candidate_....waterfall.png
 ```
 
 ### Raw `.cu8`
@@ -159,15 +159,17 @@ profile, peak rise, surrounding-band rise, tuned frequencies, sample rate,
 gain, frequency correction, receiver identity, antenna description, suggested
 transmitter, data format, and a SHA-256 integrity hash of the raw file.
 
-### Waterfall PNG
+### No image snapshot
 
-This is a quick visual preview with the watched target marked. It is useful for
-review, but it is not the complete evidence. The raw I/Q and metadata are more
-important because other analyses can be recreated from them.
+This version does not generate a PNG snapshot or display a saved-image gallery.
+Use the live Echo Power trace and waterfall for manual visual review. The raw
+I/Q is retained so a better analysis or image can be generated later without
+depending on an inaccurate automatic snapshot.
 
-The dashboard only loads a limited number of recent cards for performance. It
-does not automatically delete saved evidence. Watch the storage readout because
-long sessions can use many gigabytes.
+The app does not automatically delete saved raw evidence. Check the
+`captures/events/` folder because long sessions can use many gigabytes. Existing
+PNG files made by an older version are left untouched, but no new PNGs are
+created.
 
 ## Candidate labels
 

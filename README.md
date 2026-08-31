@@ -20,8 +20,9 @@ a meteor.
 - Makes a 30-second echo-power timeline the primary scientific display and uses
   the waterfall as supporting frequency-versus-time evidence.
 - Keeps exactly the newest 30 seconds of unsigned 8-bit I/Q in RAM.
-- Saves raw `.cu8`, JSON metadata, and a waterfall preview only after a
-  multi-frame rise has decayed and passed a surrounding-band interference test.
+- Saves raw `.cu8` and JSON metadata only after a multi-frame rise has decayed
+  and passed a surrounding-band interference test. It does not create image
+  snapshots or show a saved-image gallery.
 - Stores receiver, antenna, observer, target, duration, rise, and integrity
   metadata with new candidates.
 - Uses a fixed 28 dB tuner gain so AGC jumps cannot resemble meteor echoes.
@@ -145,8 +146,9 @@ tropospheric contamination risk.
 3. Select **Calibrate meteor target**. This clears mixed-frequency samples,
    learns a new background, and refills the 30-second RAM memory.
 4. Wait for the detector state to reach **Armed**.
-5. Leave the station running. Recent unconfirmed candidates appear
-   automatically; there is no manual refresh or download workflow.
+5. Leave the station running and watch the live Echo Power and waterfall views.
+   The session counter updates after a candidate is queued, but image snapshots
+   are not saved or displayed.
 
 Sensitivity presets are meteor-specific:
 
@@ -183,12 +185,12 @@ Candidate files are stored under:
 captures/events/
   meteor_candidate_....cu8
   meteor_candidate_....cu8.json
-  meteor_candidate_....waterfall.png
 ```
 
 The rolling RAM memory overwrites older unsaved samples automatically. Saved
-candidates remain until deliberately removed; the dashboard reports archive
-size and free disk space but never deletes evidence automatically.
+candidates remain until deliberately removed; the app never deletes evidence
+automatically. Existing waterfall PNGs created by older versions are left in
+place, but this version creates no new PNG snapshots.
 
 Candidate labels:
 

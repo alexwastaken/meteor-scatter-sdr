@@ -15,7 +15,6 @@ from meteor_sdr.live import (
     LiveSettings,
     RollingIqBuffer,
     SpectrumAnalyzer,
-    render_waterfall_png,
     settings_from_payload,
     stream_read_size,
 )
@@ -224,8 +223,20 @@ class LivePipelineTests(unittest.TestCase):
                 self.assertEqual(metadata["observation_mode"], "meteor")
                 self.assertEqual(metadata["observer"]["antenna_type"], "Yagi")
                 self.assertIsNone(metadata["suggested_target"])
-                preview_path = metadata_files[0].parent / metadata["preview_file"]
-                self.assertTrue(preview_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+                self.assertNotIn("preview_file", metadata)
+                self.assertEqual(list(metadata_files[0].parent.glob("*.png")), [])
+
+                legacy_preview = metadata_files[0].parent / "legacy.waterfall.png"
+                legacy_preview.write_bytes(b"old image")
+                metadata["preview_file"] = legacy_preview.name
+                metadata_files[0].write_text(
+                    json.dumps(metadata),
+                    encoding="utf-8",
+                )
+                listed = monitor.events()
+                self.assertEqual(len(listed), 1)
+                self.assertNotIn("preview_file", listed[0])
+                self.assertTrue(legacy_preview.exists())
             finally:
                 monitor.close()
 
@@ -252,17 +263,6 @@ class LivePipelineTests(unittest.TestCase):
                 self.assertEqual(monitor.events(), [])
             finally:
                 monitor.close()
-
-    def test_waterfall_preview_is_a_512_pixel_png(self) -> None:
-        data = bytes([127, 128]) * 8192
-        preview = render_waterfall_png(data, height=24)
-        self.assertEqual(preview[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(int.from_bytes(preview[16:20], "big"), 512)
-        self.assertEqual(int.from_bytes(preview[20:24], "big"), 24)
-        self.assertNotEqual(
-            preview,
-            render_waterfall_png(data, height=24, target_fraction=0.25),
-        )
 
     def test_monitor_publishes_a_frame_from_streamed_iq(self) -> None:
         monitor = LiveMonitor(

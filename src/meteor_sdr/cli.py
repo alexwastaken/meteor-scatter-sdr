@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="meteor-sdr",
         description="Monitor RTL-SDR radio data for meteor-scatter experiments.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.7.1")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.7.2")
     commands = parser.add_subparsers(dest="command", required=True)
 
     doctor = commands.add_parser("doctor", help="check rtl-sdr tools and the USB device")

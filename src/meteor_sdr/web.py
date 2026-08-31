@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from threading import Timer
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 import json
 import webbrowser
 
@@ -51,21 +51,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "storage": self.server.monitor.storage_status(),
                 },
             )
-            return
-        if path.startswith("/api/events/previews/"):
-            name = unquote(path.removeprefix("/api/events/previews/"))
-            preview = self.server.monitor.preview_path(name)
-            if preview is None:
-                self._json(HTTPStatus.NOT_FOUND, {"error": "preview not found"})
-                return
-            body = preview.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "image/png")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(body)
             return
         static_files = {
             "/": ("index.html", "text/html; charset=utf-8"),

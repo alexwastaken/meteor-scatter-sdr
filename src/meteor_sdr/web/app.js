@@ -48,9 +48,6 @@ const elements = {
   low: $("#low-frequency"),
   targetAxis: $("#axis-target"),
   high: $("#high-frequency"),
-  events: $("#event-list"),
-  storageUsed: $("#storage-used"),
-  storageDetail: $("#storage-detail"),
   radioCheck: $("#radio-check"),
   audioButton: $("#audio-button"),
   audioNote: $("#audio-note"),
@@ -79,26 +76,6 @@ function mhz(value, digits = 3) {
 
 function frequency(value) {
   return `${mhz(value)} MHz`;
-}
-
-function formatDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
-}
-
-function formatBytes(bytes) {
-  const value = Number(bytes);
-  if (!Number.isFinite(value) || value < 0) return "—";
-  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GiB`;
-  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
-  return `${(value / 1024).toFixed(1)} KiB`;
 }
 
 function showMessage(text, error = false) {
@@ -248,7 +225,7 @@ function updateDetectorStatus(status, frame = null) {
   }
   if (frame.archived) {
     elements.detectorState.textContent = "CANDIDATE SAVED";
-    elements.detectorDetail.textContent = "RAW I/Q + METADATA + PREVIEW";
+    elements.detectorDetail.textContent = "RAW I/Q + METADATA · NO IMAGE";
   } else if (frame.detector_active) {
     elements.detectorState.textContent = "ECHO IN PROGRESS";
     elements.detectorDetail.textContent = "WAITING FOR THE SIGNAL TO DECAY";
@@ -440,8 +417,7 @@ function acceptFrame(frame) {
 
   if (elements.retuneOverlay.hidden === false) elements.retuneOverlay.hidden = true;
   if (frame.archived) {
-    showMessage("Unconfirmed meteor-echo candidate queued: raw I/Q, metadata, and waterfall preview.");
-    window.setTimeout(loadEvents, 700);
+    showMessage("Unconfirmed candidate queued as raw I/Q and JSON metadata. No image snapshot was created.");
   }
 }
 
@@ -451,97 +427,6 @@ function animationLoop() {
     acceptFrame(pendingFrame);
   }
   requestAnimationFrame(animationLoop);
-}
-
-function profileLabel(profile) {
-  if (profile === "underdense_like") return "SHORT-TRAIL CANDIDATE";
-  if (profile === "overdense_like") return "LONG-TRAIL CANDIDATE";
-  return "NEEDS REVIEW";
-}
-
-function eventMetric(value, label) {
-  const cell = document.createElement("div");
-  cell.textContent = value;
-  const caption = document.createElement("span");
-  caption.textContent = label;
-  cell.append(caption);
-  return cell;
-}
-
-function eventCard(event) {
-  const card = document.createElement("article");
-  card.className = "event-card";
-  const previewWrap = document.createElement("div");
-  previewWrap.className = "event-preview-wrap";
-  if (event.preview_url) {
-    const image = document.createElement("img");
-    image.className = "event-preview";
-    image.src = event.preview_url;
-    image.alt = `Unconfirmed candidate waterfall from ${formatDate(event.triggered_at_utc)}`;
-    image.loading = "lazy";
-    previewWrap.append(image);
-  } else {
-    const fallback = document.createElement("div");
-    fallback.className = "event-preview-fallback";
-    fallback.textContent = "PREVIEW UNAVAILABLE";
-    previewWrap.append(fallback);
-  }
-  const training = event.radio_source === "simulation";
-  const legacyRadioCheck = !event.observation_mode && Number(event.detection_frequency_hz) === RADIO_CHECK_FREQUENCY_HZ;
-  const badge = document.createElement("span");
-  badge.className = `event-badge${training ? " training" : ""}`;
-  badge.textContent = training ? "TRAINING DATA" : legacyRadioCheck ? "LEGACY RADIO TEST" : "UNCONFIRMED";
-  previewWrap.append(badge);
-  card.append(previewWrap);
-
-  const details = document.createElement("div");
-  details.className = "event-details";
-  const title = document.createElement("strong");
-  title.textContent = legacyRadioCheck ? "Receiver-test capture" : profileLabel(event.echo_profile);
-  const date = document.createElement("small");
-  date.textContent = formatDate(event.triggered_at_utc);
-  const metrics = document.createElement("div");
-  metrics.className = "event-metrics";
-  const rise = Number(event.trigger_excess_db);
-  const duration = Number(event.echo_duration_seconds);
-  const reference = Number(event.reference_excess_db);
-  metrics.append(
-    eventMetric(Number.isFinite(rise) ? `+${rise.toFixed(1)} dB` : "—", "PEAK RISE"),
-    eventMetric(Number.isFinite(duration) ? `${duration.toFixed(2)} s` : "—", "DURATION"),
-    eventMetric(Number.isFinite(reference) ? `${reference.toFixed(1)} dB` : "—", "SURROUNDINGS"),
-  );
-  const note = document.createElement("p");
-  note.className = "event-note";
-  note.textContent = legacyRadioCheck
-    ? "Saved before receiver checks were isolated. Do not treat this file as meteor evidence."
-    : `${frequency(event.detection_frequency_hz)} · ${formatBytes(event.byte_count)} raw evidence`;
-  details.append(title, date, metrics, note);
-  card.append(details);
-  return card;
-}
-
-async function loadEvents() {
-  try {
-    const payload = await request("/api/events");
-    const simulation = currentStatus?.source === "simulation";
-    const events = (payload.events || []).filter((event) => simulation
-      ? event.radio_source === "simulation"
-      : event.radio_source !== "simulation").slice(0, 12);
-    elements.events.replaceChildren();
-    if (!events.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.innerHTML = `<span class="empty-orbit" aria-hidden="true"></span><strong>${simulation ? "NO TRAINING CANDIDATES YET" : "NO PHYSICAL CANDIDATES YET"}</strong><p>The station adds evidence after calibration, a full 30-second memory, and a qualifying rise-and-decay.</p>`;
-      elements.events.append(empty);
-    } else {
-      events.forEach((event) => elements.events.append(eventCard(event)));
-    }
-    const storage = payload.storage || {};
-    elements.storageUsed.textContent = `${formatBytes(storage.used_bytes)} stored locally`;
-    elements.storageDetail.textContent = `${storage.event_count || 0} raw files · ${formatBytes(storage.free_bytes)} free`;
-  } catch (error) {
-    showMessage("Candidate archive could not be read.", true);
-  }
 }
 
 async function calibrateMeteorTarget(message = "Meteor target applied") {
@@ -795,7 +680,5 @@ ensureCanvasSize(elements.power);
 ensureCanvasSize(elements.waterfall);
 drawPowerChart();
 pollStatus();
-loadEvents();
 requestAnimationFrame(animationLoop);
 window.setInterval(pollStatus, 2000);
-window.setInterval(loadEvents, 15000);

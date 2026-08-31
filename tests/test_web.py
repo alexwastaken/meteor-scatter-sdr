@@ -74,7 +74,7 @@ class DashboardHttpTests(unittest.TestCase):
 
         self.assertIn('aria-label="Meteor observation workspace"', body)
         self.assertIn("PASSIVE RECEIVER", body)
-        self.assertIn("UNCONFIRMED", body.upper())
+        self.assertIn("Automatic image snapshots are off", body)
         self.assertIn("WATCH MARKER · NOT A SIGNAL", body)
         self.assertIn("95.3 MHz", body)
         self.assertIn("KZJH", body)
@@ -89,6 +89,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertNotIn("spectrum", inspector.ids)
         self.assertNotIn("Download ZIP", body)
         self.assertNotIn("FM audio ·", body)
+        self.assertNotIn('id="event-list"', body)
+        self.assertNotIn("Recent unconfirmed candidates", body)
         self.assertEqual(inspector.tooltip_targets, inspector.tooltip_ids)
         self.assertGreaterEqual(len(inspector.tooltip_ids), 5)
 
@@ -140,9 +142,26 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertNotIn("confirmed meteor detection", body.lower())
 
     def test_old_download_api_is_gone(self) -> None:
-        for path in ("/api/captures", "/api/download", "/api/captures.zip"):
+        for path in (
+            "/api/captures",
+            "/api/download",
+            "/api/captures.zip",
+            "/api/events/previews/old.waterfall.png",
+        ):
             status_code, _, _ = self.get(path)
             self.assertEqual(status_code, 404)
+
+    def test_saved_image_feature_is_absent_but_live_waterfall_remains(self) -> None:
+        _, page_bytes, _ = self.get("/")
+        _, script_bytes, _ = self.get("/app.js")
+        page = page_bytes.decode("utf-8")
+        script = script_bytes.decode("utf-8")
+
+        self.assertIn('id="waterfall"', page)
+        self.assertIn("drawWaterfall", script)
+        self.assertNotIn("preview_url", script)
+        self.assertNotIn("eventCard", script)
+        self.assertNotIn("loadEvents", script)
 
     def test_audio_stream_requires_a_running_receiver(self) -> None:
         status_code, body, _ = self.get("/api/live/audio")

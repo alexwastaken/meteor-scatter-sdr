@@ -11,9 +11,7 @@ import hashlib
 import json
 import math
 import shutil
-import struct
 import time
-import zlib
 
 import numpy as np
 
@@ -243,57 +241,6 @@ def mean_power_db(values_db: np.ndarray) -> float:
     if values_db.size == 0:
         raise ValueError("at least one spectrum bin is required")
     return float(10.0 * np.log10(np.mean(np.power(10.0, values_db / 10.0))))
-
-
-def render_waterfall_png(
-    iq_bytes: bytes,
-    analyzer: SpectrumAnalyzer | None = None,
-    height: int = 240,
-    target_fraction: float | None = None,
-) -> bytes:
-    """Render a compact, newest-first waterfall preview without extra packages."""
-    analyzer = analyzer or SpectrumAnalyzer()
-    needed = analyzer.fft_size * 2
-    if len(iq_bytes) < needed:
-        raise ValueError(f"at least {needed} I/Q bytes are required")
-    maximum_start = len(iq_bytes) - needed
-    starts = np.linspace(0, maximum_start, height, dtype=np.int64)
-    rows = np.empty((height, analyzer.display_bins), dtype=np.float32)
-    for index, start in enumerate(starts):
-        rows[height - index - 1] = analyzer.analyze(
-            iq_bytes[int(start) : int(start) + needed]
-        )
-
-    level = np.clip((rows + 90.0) / 70.0, 0.0, 1.0)
-    stops = np.array(
-        [[0, 0, 0], [0, 12, 40], [0, 72, 210], [0, 181, 255], [220, 248, 255]],
-        dtype=np.float32,
-    )
-    scaled = level * (len(stops) - 1)
-    lower = np.minimum(len(stops) - 2, scaled.astype(np.int16))
-    mix = (scaled - lower)[..., None]
-    rgb = (stops[lower] * (1 - mix) + stops[lower + 1] * mix).astype(np.uint8)
-    if target_fraction is not None:
-        marker_x = round(
-            max(0.0, min(1.0, target_fraction)) * (analyzer.display_bins - 1)
-        )
-        for row in range(height):
-            if row % 8 < 4:
-                rgb[row, marker_x] = [73, 215, 255]
-    raw = b"".join(b"\x00" + row.tobytes() for row in rgb)
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data))
-            + kind
-            + data
-            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-        )
-
-    header = struct.pack(">IIBBBBB", analyzer.display_bins, height, 8, 2, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(
-        b"IDAT", zlib.compress(raw, level=6)
-    ) + chunk(b"IEND", b"")
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,10 +651,11 @@ class LiveMonitor:
                 item = json.loads(path.read_text(encoding="utf-8"))
                 data_path = event_dir / item["data_file"]
                 if data_path.is_file():
+                    # Older metadata may reference a PNG that this version no
+                    # longer creates or serves. Keep the on-disk record intact,
+                    # but do not expose the sunset image feature through the API.
+                    item.pop("preview_file", None)
                     item["byte_count"] = data_path.stat().st_size
-                    preview_name = item.get("preview_file")
-                    if isinstance(preview_name, str) and (event_dir / preview_name).is_file():
-                        item["preview_url"] = f"/api/events/previews/{preview_name}"
                     result.append(item)
             except (OSError, ValueError, KeyError, TypeError):
                 continue
@@ -736,13 +684,6 @@ class LiveMonitor:
 
     def _event_dir(self) -> Path:
         return self.base_config.output_dir.expanduser() / "events"
-
-    def preview_path(self, name: str) -> Path | None:
-        if Path(name).name != name or not name.endswith(".waterfall.png"):
-            return None
-        path = (self._event_dir() / name).resolve()
-        event_dir = self._event_dir().resolve()
-        return path if path.parent == event_dir and path.is_file() else None
 
     def _run(self) -> None:
         with self._condition:
@@ -963,16 +904,9 @@ class LiveMonitor:
         stem = f"{prefix}_{now.strftime('%Y%m%dT%H%M%S_%fZ')}_{settings.detection_frequency_hz}Hz"
         data_path = event_dir / f"{stem}.cu8"
         metadata_path = event_dir / f"{stem}.cu8.json"
-        preview_path = event_dir / f"{stem}.waterfall.png"
         temporary_path = event_dir / f".{stem}.part"
         temporary_path.write_bytes(data)
         temporary_path.replace(data_path)
-        target_fraction = (
-            settings.detection_frequency_hz - settings.config.lower_edge_hz
-        ) / settings.config.sample_rate_hz
-        preview_path.write_bytes(
-            render_waterfall_png(data, target_fraction=target_fraction)
-        )
         with self._condition:
             receiver = dict(self._receiver_info)
         metadata = {
@@ -983,7 +917,6 @@ class LiveMonitor:
             ),
             "radio_source": self._source_label,
             "data_file": data_path.name,
-            "preview_file": preview_path.name,
             "triggered_at_utc": now.isoformat(),
             "echo_end_utc": now.isoformat(),
             "echo_start_utc": (
@@ -1034,7 +967,7 @@ class LiveMonitor:
             "note": (
                 "Synthetic training event; this data did not come from an antenna."
                 if self._source_label == "simulation"
-                else "Automatic candidate only; inspect the waterfall before classifying it as a meteor."
+                else "Automatic candidate only; review the raw I/Q and detector metadata before classifying it as a meteor."
             ),
         }
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
