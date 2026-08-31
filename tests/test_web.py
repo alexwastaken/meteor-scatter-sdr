@@ -2,6 +2,7 @@ from html.parser import HTMLParser
 from http.client import HTTPConnection
 from threading import Thread
 import json
+import re
 import unittest
 
 from meteor_sdr.config import CaptureConfig
@@ -10,6 +11,23 @@ from meteor_sdr.web import DashboardServer
 
 
 class PageInspector(HTMLParser):
+    VOID_ELEMENTS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self.ids: set[str] = set()
@@ -17,12 +35,17 @@ class PageInspector(HTMLParser):
         self.tooltip_ids: set[str] = set()
         self.tooltip_targets: set[str] = set()
         self.buttons: set[str] = set()
+        self.elements: dict[str, tuple[str, dict[str, str | None]]] = {}
+        self.element_text: dict[str, list[str]] = {}
+        self._open_elements: list[tuple[str, str | None]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
         element_id = values.get("id")
         if element_id:
             self.ids.add(element_id)
+            self.elements[element_id] = (tag, values)
+            self.element_text[element_id] = []
         if tag == "canvas" and element_id:
             self.canvases.add(element_id)
         if tag == "button":
@@ -33,6 +56,22 @@ class PageInspector(HTMLParser):
                 self.tooltip_targets.add(described_by)
         if values.get("role") == "tooltip" and element_id:
             self.tooltip_ids.add(element_id)
+        if tag not in self.VOID_ELEMENTS:
+            self._open_elements.append((tag, element_id))
+
+    def handle_endtag(self, tag: str) -> None:
+        for index in range(len(self._open_elements) - 1, -1, -1):
+            if self._open_elements[index][0] == tag:
+                del self._open_elements[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        for _, element_id in self._open_elements:
+            if element_id:
+                self.element_text[element_id].append(data)
+
+    def text_for(self, element_id: str) -> str:
+        return " ".join("".join(self.element_text[element_id]).split())
 
 
 class DashboardHttpTests(unittest.TestCase):
@@ -93,6 +132,114 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertNotIn("Recent unconfirmed candidates", body)
         self.assertEqual(inspector.tooltip_targets, inspector.tooltip_ids)
         self.assertGreaterEqual(len(inspector.tooltip_ids), 5)
+
+    def test_live_display_explanations_are_accessible_and_complete(self) -> None:
+        _, body_bytes, _ = self.get("/")
+        body = body_bytes.decode("utf-8")
+        inspector = PageInspector()
+        inspector.feed(body)
+
+        displays = {
+            "power": {
+                "button": "power-info-button",
+                "panel": "power-info-panel",
+                "accessible_names": ("echo power", "target-band rise", "target band rise"),
+                "required_text": (
+                    ("x axis", "horizontal axis"),
+                    ("30 seconds", "thirty seconds", "30 s"),
+                    ("left",),
+                    ("right", "now"),
+                    ("y axis", "vertical axis"),
+                    ("rise above", "signal rise", "db above baseline", "relative change"),
+                    ("db", "decibel"),
+                    ("cyan", "blue"),
+                    ("watched channel", "target channel", "target window"),
+                    ("reference", "surrounding band", "surrounding-band"),
+                    ("trigger", "threshold"),
+                ),
+            },
+            "waterfall": {
+                "button": "waterfall-info-button",
+                "panel": "waterfall-info-panel",
+                "accessible_names": ("waterfall",),
+                "required_text": (
+                    ("x axis", "horizontal axis"),
+                    ("frequency",),
+                    ("left",),
+                    ("right",),
+                    ("y axis", "vertical axis"),
+                    ("time",),
+                    ("newest row at the top", "newest at the top"),
+                    ("brightness", "color"),
+                    ("received power", "received energy", "signal strength"),
+                    ("watch marker",),
+                    ("not a signal", "screen overlay"),
+                    ("receiver center", "tuning center"),
+                    ("dc artifact", "center artifact"),
+                ),
+            },
+        }
+
+        for display, contract in displays.items():
+            with self.subTest(display=display):
+                button_id = contract["button"]
+                panel_id = contract["panel"]
+                self.assertIn(button_id, inspector.elements)
+                self.assertIn(panel_id, inspector.elements)
+
+                button_tag, button_attributes = inspector.elements[button_id]
+                self.assertEqual(button_tag, "button")
+                self.assertEqual(button_attributes.get("type"), "button")
+                self.assertEqual(button_attributes.get("aria-controls"), panel_id)
+                self.assertEqual(button_attributes.get("aria-expanded"), "false")
+                accessible_name = (button_attributes.get("aria-label") or "").lower()
+                self.assertTrue(
+                    any(name in accessible_name for name in contract["accessible_names"]),
+                    f"{button_id} needs a specific accessible name",
+                )
+
+                panel_tag, panel_attributes = inspector.elements[panel_id]
+                self.assertIn(panel_tag, {"aside", "div", "section"})
+                self.assertIn("hidden", panel_attributes)
+                if panel_tag != "section":
+                    self.assertEqual(panel_attributes.get("role"), "region")
+                else:
+                    self.assertIn(panel_attributes.get("role"), {None, "region"})
+                labelled_by = panel_attributes.get("aria-labelledby")
+                self.assertIsNotNone(labelled_by)
+                self.assertIn(labelled_by, inspector.elements)
+                self.assertTrue(inspector.text_for(labelled_by))
+
+                explanation = inspector.text_for(panel_id).lower()
+                for alternatives in contract["required_text"]:
+                    self.assertTrue(
+                        any(term in explanation for term in alternatives),
+                        f"{panel_id} must explain one of {alternatives!r}",
+                    )
+
+    def test_live_display_explanation_buttons_control_open_state(self) -> None:
+        _, script_bytes, _ = self.get("/app.js")
+        script = script_bytes.decode("utf-8")
+
+        self.assertIn("elements.visualInfoButtons.forEach", script)
+        self.assertIn('getAttribute("aria-controls")', script)
+        self.assertRegex(
+            script,
+            re.compile(
+                r'button\.setAttribute\(\s*["\']aria-expanded["\']\s*,'
+                r"\s*String\((?:open|opening)\)"
+            ),
+        )
+        self.assertTrue(
+            re.search(r"panel\.hidden\s*=\s*!\s*(?:open|opening)", script)
+            or re.search(
+                r"panel\.toggleAttribute\(\s*[\"']hidden[\"']\s*,\s*!\s*(?:open|opening)",
+                script,
+            ),
+            "Opening an explanation must remove hidden; closing it must restore hidden",
+        )
+        self.assertIn("closeVisualInfoPanels();", script)
+        self.assertIn('"Escape"', script)
 
     def test_radio_check_is_compact_visual_free_and_isolated(self) -> None:
         _, body_bytes, _ = self.get("/")

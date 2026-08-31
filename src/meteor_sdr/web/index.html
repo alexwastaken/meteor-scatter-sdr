@@ -99,7 +99,7 @@
             <fieldset class="sensitivity">
               <legend>METEOR SENSITIVITY
                 <button class="info-trigger" type="button" aria-label="About detector sensitivity" aria-describedby="tip-sensitivity">i</button>
-                <span class="tooltip" id="tip-sensitivity" role="tooltip">Balanced requires an 8 dB rise above the learned background. Sensitive saves more weak candidates; Strict rejects more noise.</span>
+                <span class="tooltip" id="tip-sensitivity" role="tooltip">Balanced starts at an 8 dB rise. The adaptive trigger can move higher when the background is noisy. Sensitive starts lower; Strict starts higher.</span>
               </legend>
               <div class="segmented">
                 <button type="button" data-threshold="10">Strict</button>
@@ -132,9 +132,9 @@
                 <h2 id="live-title">Echo power + target waterfall</h2>
               </div>
               <div class="live-metrics">
-                <div><span>SIGNAL RISE
+                <div><span>TARGET RISE
                   <button class="info-trigger" type="button" aria-label="About signal rise" aria-describedby="tip-rise">i</button>
-                  <span class="tooltip tooltip-right" id="tip-rise" role="tooltip">How far the watched channel is above its learned background. A candidate must persist without raising the surrounding band at the same time.</span>
+                  <span class="tooltip tooltip-right" id="tip-rise" role="tooltip">The cyan target-window line's current change from its learned baseline, in relative dB. This is not absolute dBm or confirmation of a meteor.</span>
                 </span><strong id="excess-value">— dB</strong></div>
                 <div><span>TRIGGER</span><strong id="threshold-value">8.0 dB</strong></div>
                 <div><span>SESSION</span><strong id="candidate-count">0 candidates</strong></div>
@@ -142,17 +142,64 @@
             </header>
 
             <figure class="power-figure">
-              <figcaption><span>ECHO POWER / LAST 30 SECONDS</span><span>RISE ABOVE BACKGROUND</span></figcaption>
-              <div class="power-wrap"><canvas id="power-chart" aria-label="Signal rise over the newest 30 seconds"></canvas><span class="power-threshold" id="power-threshold-label">TRIGGER</span></div>
+              <figcaption>
+                <span>TARGET-BAND RISE / LAST 30 SECONDS</span>
+                <span class="figure-caption-tools">
+                  <span class="caption-note">RELATIVE RISE (dB ABOVE BASELINE)</span>
+                  <button class="visual-info-button" id="power-info-button" type="button" aria-label="Explain the target-band rise graph" aria-controls="power-info-panel" aria-expanded="false"><i aria-hidden="true">i</i> GRAPH INFO</button>
+                </span>
+              </figcaption>
+              <section class="visual-info-panel" id="power-info-panel" aria-labelledby="power-info-title" hidden>
+                <div class="visual-info-intro">
+                  <h3 id="power-info-title">How to read the target-band graph</h3>
+                  <p>This is relative change—not absolute radio power, volume, dBm, or proof of a meteor. Each line is compared with its own recently learned quiet level.</p>
+                </div>
+                <dl class="visual-info-grid">
+                  <div><dt>X AXIS · TIME</dt><dd>Thirty seconds ago is on the left. Live data is on the right at NOW.</dd></div>
+                  <div><dt>Y AXIS · dB ABOVE BASELINE</dt><dd>0 dB means the learned normal level. Positive values are stronger than normal; negative values are quieter. The scale expands for large peaks.</dd></div>
+                  <div><dt>CYAN · TARGET WINDOW</dt><dd>Rise in the watched 160 kHz window around 95.3 MHz. This is the line a localized echo should raise.</dd></div>
+                  <div><dt>PINK · SURROUNDING REFERENCE</dt><dd>Rise in frequencies away from the target. It is a control line: if cyan and pink rise together, broadband interference or overload is more likely.</dd></div>
+                  <div><dt>AMBER · ADAPTIVE TRIGGER</dt><dd>The minimum is your 6, 8, or 10 dB sensitivity setting, but the app can raise it when the background is noisy. Crossing it starts a check; it does not confirm a meteor.</dd></div>
+                </dl>
+                <p class="visual-info-clue"><strong>More meteor-like:</strong> cyan rises suddenly while pink stays near 0 dB, followed by a decay. The detector also checks duration and persistence.</p>
+              </section>
+              <div class="visual-legend power-legend" id="power-legend" aria-label="Target-band graph legend">
+                <span><i class="legend-line target-line" aria-hidden="true"></i>CYAN · TARGET WINDOW</span>
+                <span><i class="legend-line reference-line" aria-hidden="true"></i>PINK · SURROUNDING REFERENCE</span>
+                <span><i class="legend-line trigger-line" aria-hidden="true"></i>AMBER · ADAPTIVE TRIGGER</span>
+              </div>
+              <div class="power-wrap"><canvas id="power-chart" aria-label="Relative target and surrounding-band rise in decibels over the newest 30 seconds" aria-describedby="power-legend">The target-band rise graph requires a browser with canvas support. Use Graph Info for a complete text explanation.</canvas><span class="power-threshold" id="power-threshold-label">TRIGGER</span></div>
               <div class="time-axis"><span>−30 s</span><span>−20 s</span><span>−10 s</span><strong>NOW</strong></div>
             </figure>
 
             <figure class="waterfall-figure">
-              <figcaption><span>TARGET-CHANNEL WATERFALL · NEWEST ROW AT TOP</span><span>FREQUENCY OVER TIME</span></figcaption>
+              <figcaption>
+                <span>TARGET + SURROUNDING-BAND WATERFALL · NEWEST ROW AT TOP</span>
+                <span class="figure-caption-tools">
+                  <span class="caption-note">FREQUENCY OVER TIME</span>
+                  <button class="visual-info-button" id="waterfall-info-button" type="button" aria-label="Explain the radio waterfall" aria-controls="waterfall-info-panel" aria-expanded="false"><i aria-hidden="true">i</i> WATERFALL INFO</button>
+                </span>
+              </figcaption>
+              <section class="visual-info-panel" id="waterfall-info-panel" aria-labelledby="waterfall-info-title" hidden>
+                <div class="visual-info-intro">
+                  <h3 id="waterfall-info-title">How to read the waterfall</h3>
+                  <p>Every horizontal row is one spectrum measurement. The display builds a history so you can see when energy appeared and where it was in frequency.</p>
+                </div>
+                <dl class="visual-info-grid">
+                  <div><dt>X AXIS · FREQUENCY</dt><dd>Lower frequencies are left and higher frequencies are right. The labels below show the current 1.024 MHz receiver span.</dd></div>
+                  <div><dt>Y AXIS · TIME</dt><dd>NOW is the newest row at the top. Older measurements move downward as new rows arrive.</dd></div>
+                  <div><dt>COLOR · RECEIVED ENERGY</dt><dd>Black is weakest, then dark blue, blue, cyan, and white is strongest. This is an uncalibrated SDR display scale—not dBm and not meteor brightness.</dd></div>
+                  <div><dt>DASHED CYAN · WATCH MARKER</dt><dd>The selected meteor frequency. It is a screen overlay, not a received signal and never a transmission.</dd></div>
+                  <div><dt>MUTED LINE · RECEIVER CENTER</dt><dd>The SDR tuning center. A bright feature fixed exactly here can be the receiver's center/DC artifact, which is why the meteor target is offset.</dd></div>
+                </dl>
+                <p class="visual-info-clue"><strong>More meteor-like:</strong> a one-time bright feature near the watch marker while the pink reference line above stays quiet. A whole bright row, a permanent stripe, repeating pulses, or a center-locked line is more likely interference or an SDR artifact.</p>
+              </section>
+              <div class="waterfall-key" id="waterfall-color-key" aria-label="Waterfall color strength scale"><span>WEAK · ≈−95 dBFS</span><i aria-hidden="true"></i><span>STRONG · ≈−20 dBFS</span><small>BLACK → BLUE → CYAN → WHITE</small></div>
               <div class="waterfall-wrap" id="waterfall-wrap">
-                <canvas id="waterfall" aria-label="Live narrow-band radio waterfall for meteor candidate review"></canvas>
+                <canvas id="waterfall" aria-label="Radio waterfall with frequency from left to right, newest time at the top, and brighter colors for stronger received energy" aria-describedby="waterfall-color-key canvas-summary">The radio waterfall requires a browser with canvas support. Use Waterfall Info for a complete text explanation.</canvas>
                 <div class="watch-marker" id="watch-marker"><span>WATCH MARKER · NOT A SIGNAL</span></div>
                 <div class="center-marker" id="center-marker"><span>RECEIVER CENTER</span></div>
+                <div class="waterfall-time-labels" aria-hidden="true"><span>NOW</span><span>≈30 s AGO</span></div>
                 <div class="canvas-empty" id="canvas-empty">WAITING FOR PHYSICAL RF DATA</div>
                 <div class="mode-overlay" id="mode-overlay" hidden><strong>METEOR WATCH PAUSED</strong><span>Receiver audio check is active. Candidate detection and saving are disabled.</span></div>
                 <div class="retune-overlay" id="retune-overlay" hidden><span>CALIBRATING TARGET</span><strong id="retune-frequency">95.300 MHz</strong></div>

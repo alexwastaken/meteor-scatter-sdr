@@ -52,6 +52,7 @@ const elements = {
   audioButton: $("#audio-button"),
   audioNote: $("#audio-note"),
   tooltips: [...document.querySelectorAll(".info-trigger")],
+  visualInfoButtons: [...document.querySelectorAll(".visual-info-button")],
 };
 
 let currentStatus = null;
@@ -352,19 +353,42 @@ function drawPowerChart() {
   const context = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
+  const plotLeft = width < 360 ? 36 : 42;
+  const plotRight = width - 1;
+  const minimum = -5;
+  const rawMaximum = powerHistory.length
+    ? Math.max(
+      15,
+      ...powerHistory.map((item) => item.threshold + 5),
+      ...powerHistory.map((item) => item.excess + 3),
+      ...powerHistory.map((item) => item.reference + 3),
+    )
+    : 15;
+  const tickStep = rawMaximum <= 30 ? 5 : rawMaximum <= 60 ? 10 : 20;
+  const maximum = Math.max(15, Math.ceil(rawMaximum / tickStep) * tickStep);
+  const yFor = (value) => height - (Math.max(minimum, Math.min(maximum, value)) - minimum) / (maximum - minimum) * height;
+
   context.fillStyle = "#020507";
   context.fillRect(0, 0, width, height);
   context.lineWidth = 1;
-  for (let row = 1; row < 4; row += 1) {
-    const y = row * height / 4;
+  context.font = "8px ui-monospace, SFMono-Regular, Menlo, monospace";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  const ticks = [minimum, 0];
+  for (let value = tickStep; value <= maximum; value += tickStep) ticks.push(value);
+  [...new Set(ticks)].sort((a, b) => a - b).forEach((value) => {
+    const y = yFor(value);
     context.strokeStyle = "#12242d";
     context.beginPath();
-    context.moveTo(0, y);
-    context.lineTo(width, y);
+    context.moveTo(plotLeft, y);
+    context.lineTo(plotRight, y);
     context.stroke();
-  }
+    context.fillStyle = value === 0 ? "#8dafbd" : "#617985";
+    const labelY = Math.max(6, Math.min(height - 6, y));
+    context.fillText(`${value > 0 ? "+" : ""}${value}`, plotLeft - 6, labelY);
+  });
   for (let column = 1; column < 6; column += 1) {
-    const x = column * width / 6;
+    const x = plotLeft + column * (plotRight - plotLeft) / 6;
     context.strokeStyle = "#0d1c23";
     context.beginPath();
     context.moveTo(x, 0);
@@ -374,10 +398,7 @@ function drawPowerChart() {
   if (!powerHistory.length) return;
   const newest = powerHistory[powerHistory.length - 1].time;
   const oldest = newest - POWER_WINDOW_MS;
-  const maximum = Math.max(14, ...powerHistory.map((item) => item.threshold + 5), ...powerHistory.map((item) => item.excess + 3));
-  const minimum = -4;
-  const xFor = (time) => Math.max(0, Math.min(width, (time - oldest) / POWER_WINDOW_MS * width));
-  const yFor = (value) => height - (Math.max(minimum, Math.min(maximum, value)) - minimum) / (maximum - minimum) * height;
+  const xFor = (time) => Math.max(plotLeft, Math.min(plotRight, plotLeft + (time - oldest) / POWER_WINDOW_MS * (plotRight - plotLeft)));
   const threshold = powerHistory[powerHistory.length - 1].threshold;
   const thresholdY = yFor(threshold);
   context.setLineDash([6, 5]);
@@ -389,7 +410,7 @@ function drawPowerChart() {
   context.setLineDash([]);
   elements.powerThresholdLabel.style.top = `${Math.max(2, thresholdY - 13)}px`;
 
-  const plot = (field, color, widthValue) => {
+  const plot = (field, color, widthValue, dash = []) => {
     context.beginPath();
     powerHistory.forEach((item, index) => {
       const x = xFor(item.time);
@@ -398,9 +419,11 @@ function drawPowerChart() {
     });
     context.strokeStyle = color;
     context.lineWidth = widthValue;
+    context.setLineDash(dash);
     context.stroke();
+    context.setLineDash([]);
   };
-  plot("reference", "rgba(255, 118, 149, .46)", 1);
+  plot("reference", "rgba(255, 118, 149, .62)", 1, [3, 4]);
   plot("excess", "#38c7ff", 2);
 }
 
@@ -432,8 +455,8 @@ function acceptFrame(frame) {
   setMarkerPositions(frame.lower_edge_hz, frame.upper_edge_hz, frame.detection_frequency_hz, center);
   elements.headerTarget.textContent = mhz(frame.detection_frequency_hz);
   elements.canvasSummary.textContent = frame.detector_active
-    ? `Candidate in progress at ${frequency(frame.detection_frequency_hz)}: ${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB above background.`
-    : `Watching ${frequency(frame.detection_frequency_hz)}. Current rise ${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB; surrounding-band change ${Number(frame.reference_excess_db).toFixed(1)} dB.`;
+    ? `Candidate in progress at ${frequency(frame.detection_frequency_hz)} · target ${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB · surroundings ${Number(frame.reference_excess_db).toFixed(1)} dB · trigger ${Number(frame.threshold_db).toFixed(1)} dB.`
+    : `Watching ${frequency(frame.detection_frequency_hz)} · target ${frame.excess_db >= 0 ? "+" : ""}${Number(frame.excess_db).toFixed(1)} dB · surroundings ${Number(frame.reference_excess_db).toFixed(1)} dB · trigger ${Number(frame.threshold_db).toFixed(1)} dB.`;
 
   if (elements.retuneOverlay.hidden === false) elements.retuneOverlay.hidden = true;
   if (frame.archived) {
@@ -641,6 +664,15 @@ function closeTooltips(except = null) {
   });
 }
 
+function closeVisualInfoPanels(except = null) {
+  elements.visualInfoButtons.forEach((button) => {
+    if (button === except) return;
+    const panel = document.getElementById(button.getAttribute("aria-controls"));
+    button.setAttribute("aria-expanded", "false");
+    if (panel) panel.hidden = true;
+  });
+}
+
 elements.tooltips.forEach((trigger) => {
   trigger.setAttribute("aria-expanded", "false");
   trigger.addEventListener("click", (event) => {
@@ -653,8 +685,22 @@ elements.tooltips.forEach((trigger) => {
     trigger.setAttribute("aria-expanded", String(open));
   });
 });
+elements.visualInfoButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const panel = document.getElementById(button.getAttribute("aria-controls"));
+    if (!panel) return;
+    const opening = panel.hidden;
+    closeVisualInfoPanels(button);
+    panel.hidden = !opening;
+    button.setAttribute("aria-expanded", String(opening));
+  });
+});
 document.addEventListener("click", () => closeTooltips());
-document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTooltips(); });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  closeTooltips();
+  closeVisualInfoPanels();
+});
 
 elements.calibrate.addEventListener("click", () => calibrateMeteorTarget());
 elements.watch.addEventListener("click", toggleMeteorWatch);
