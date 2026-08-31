@@ -72,6 +72,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/app.css": ("app.css", "text/css; charset=utf-8"),
             "/display.css": ("display.css", "text/css; charset=utf-8"),
             "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/meteor-guide.md": (
+                "METEOR_GUIDE.md",
+                "text/markdown; charset=utf-8",
+            ),
             "/assets/meteor-scatter-path.jpg": (
                 "assets/meteor-scatter-path.jpg",
                 "image/jpeg",

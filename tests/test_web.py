@@ -79,6 +79,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("95.3 MHz", body)
         self.assertIn("KZJH", body)
         self.assertIn("024° true", body)
+        self.assertIn('href="/meteor-guide.md"', body)
+        self.assertIn("Open meteor guide", body)
         self.assertEqual(inspector.canvases, {"power-chart", "waterfall"})
         self.assertTrue({"calibrate-button", "watch-button", "retry-button"} <= inspector.buttons)
         self.assertNotIn("center-frequency", inspector.ids)
@@ -113,6 +115,7 @@ class DashboardHttpTests(unittest.TestCase):
         for path, content_type in (
             ("/app.css", "text/css; charset=utf-8"),
             ("/app.js", "text/javascript; charset=utf-8"),
+            ("/meteor-guide.md", "text/markdown; charset=utf-8"),
             ("/assets/meteor-scatter-path.jpg", "image/jpeg"),
         ):
             status_code, body, headers = self.get(path)
@@ -120,6 +123,21 @@ class DashboardHttpTests(unittest.TestCase):
             self.assertGreater(len(body), 100)
             self.assertEqual(headers["content-type"], content_type)
             self.assertEqual(headers["cache-control"], "no-store")
+
+    def test_meteor_guide_is_plain_language_and_honest_about_evidence(self) -> None:
+        status_code, body_bytes, headers = self.get("/meteor-guide.md")
+        body = body_bytes.decode("utf-8")
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(headers["content-type"], "text/markdown; charset=utf-8")
+        self.assertIn("# Meteor Echo Monitor: Simple Guide", body)
+        self.assertIn("How the automatic detector decides to save", body)
+        self.assertIn("What gets saved", body)
+        self.assertIn("Common false positives", body)
+        self.assertIn("Important limits of this version", body)
+        self.assertIn("unconfirmed meteor echo candidate", body.lower())
+        self.assertIn("does **not** transmit", body)
+        self.assertNotIn("confirmed meteor detection", body.lower())
 
     def test_old_download_api_is_gone(self) -> None:
         for path in ("/api/captures", "/api/download", "/api/captures.zip"):
