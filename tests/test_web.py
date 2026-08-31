@@ -1,6 +1,7 @@
 from html.parser import HTMLParser
 from http.client import HTTPConnection
 from threading import Thread
+from unittest.mock import patch
 import json
 import re
 import unittest
@@ -8,6 +9,22 @@ import unittest
 from meteor_sdr.config import CaptureConfig
 from meteor_sdr.live import LiveMonitor
 from meteor_sdr.web import DashboardServer
+
+
+def javascript_function(script: str, name: str) -> str:
+    """Return one classic function declaration without depending on a JS parser."""
+    marker = f"function {name}("
+    start = script.index(marker)
+    opening_brace = script.index("{", start)
+    depth = 0
+    for index in range(opening_brace, len(script)):
+        if script[index] == "{":
+            depth += 1
+        elif script[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return script[start : index + 1]
+    raise AssertionError(f"Unclosed JavaScript function: {name}")
 
 
 class PageInspector(HTMLParser):
@@ -52,7 +69,8 @@ class PageInspector(HTMLParser):
             if element_id:
                 self.buttons.add(element_id)
             described_by = values.get("aria-describedby")
-            if described_by:
+            classes = (values.get("class") or "").split()
+            if described_by and "info-trigger" in classes:
                 self.tooltip_targets.add(described_by)
         if values.get("role") == "tooltip" and element_id:
             self.tooltip_ids.add(element_id)
@@ -241,26 +259,158 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("closeVisualInfoPanels();", script)
         self.assertIn('"Escape"', script)
 
-    def test_radio_check_is_compact_visual_free_and_isolated(self) -> None:
+    def test_speaker_button_listens_to_selected_meteor_frequency(self) -> None:
         _, body_bytes, _ = self.get("/")
-        body = body_bytes.decode()
-        radio_section = body.split('<details class="panel radio-check"', 1)[1].split("</details>", 1)[0]
-        self.assertIn('id="audio-button"', radio_section)
-        self.assertIn('aria-pressed="false"', radio_section)
-        self.assertIn("candidate saving", radio_section)
-        self.assertNotIn("<canvas", radio_section)
-        self.assertNotIn("waterfall", radio_section.lower())
-        self.assertNotIn("spectrum", radio_section.lower())
+        _, style_bytes, _ = self.get("/app.css")
+        body = body_bytes.decode("utf-8")
+        styles = style_bytes.decode("utf-8")
+        inspector = PageInspector()
+        inspector.feed(body)
+
+        self.assertNotIn('id="radio-check"', body)
+        self.assertNotIn('<details class="panel radio-check"', body)
+        self.assertIn("audio-button", inspector.elements)
+        button_tag, button_attributes = inspector.elements["audio-button"]
+        self.assertEqual(button_tag, "button")
+        self.assertEqual(button_attributes.get("type"), "button")
+        self.assertEqual(button_attributes.get("aria-pressed"), "false")
+        self.assertIn("disabled", button_attributes)
+        accessible_name = (button_attributes.get("aria-label") or "").lower()
+        self.assertIn("listen", accessible_name)
+        self.assertIn("selected", accessible_name)
+        self.assertTrue(
+            any(term in accessible_name for term in ("meteor", "target", "frequency"))
+        )
+        self.assertEqual(button_attributes.get("aria-describedby"), "audio-note")
+        self.assertIn("speaker-button", (button_attributes.get("class") or "").split())
+        button_start = body.rfind("<button", 0, body.index('id="audio-button"'))
+        button_markup = body[button_start : body.index("</button>", button_start)]
+        self.assertIn("<svg", button_markup)
+        self.assertIn('aria-hidden="true"', button_markup)
+        self.assertIn("audio-note", inspector.elements)
+        _, note_attributes = inspector.elements["audio-note"]
+        self.assertTrue(
+            note_attributes.get("role") == "status"
+            or note_attributes.get("aria-live") == "polite",
+            "The changing listen state must be announced without moving focus",
+        )
+
+        fixed_audio_rule = False
+        for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", styles):
+            if not any(
+                selector in selectors
+                for selector in ("#audio-button", ".audio-button", ".speaker-button")
+            ):
+                continue
+            if all(
+                re.search(rf"\b{property_name}\s*:", declarations)
+                for property_name in ("position", "left", "bottom")
+            ) and re.search(r"\bposition\s*:\s*fixed\b", declarations):
+                fixed_audio_rule = True
+                break
+        self.assertTrue(fixed_audio_rule, "The speaker control must stay at the lower-left")
 
         _, script_bytes, _ = self.get("/app.js")
-        script = script_bytes.decode()
-        self.assertIn('observation_mode: "radio_check"', script)
-        self.assertIn('observation_mode: "meteor"', script)
+        script = script_bytes.decode("utf-8")
+        radio_payload = javascript_function(script, "radioPayload")
+        selected_target = re.search(
+            r"const\s+([A-Za-z_$][\w$]*)\s*=\s*meteorTargetHz\(\)",
+            radio_payload,
+        )
+        self.assertIsNotNone(selected_target)
+        target_variable = selected_target.group(1)
+        self.assertRegex(radio_payload, rf"center_frequency_hz\s*:\s*{target_variable}\b")
+        self.assertRegex(radio_payload, rf"detection_frequency_hz\s*:\s*{target_variable}\b")
+        self.assertRegex(
+            radio_payload,
+            r"sample_rate_hz\s*:\s*(?:RADIO_CHECK_SPAN_HZ|250_000)",
+        )
+        self.assertIn('observation_mode: "radio_check"', radio_payload)
+        self.assertIn("const RADIO_CHECK_SPAN_HZ = 250_000", script)
+        self.assertNotIn("RADIO_CHECK_FREQUENCY_HZ", script)
+
+        toggle = javascript_function(script, "toggleRadioCheck")
+        saved_settings = next(
+            (
+                name
+                for name in re.findall(
+                    r"let\s+([A-Za-z_$][\w$]*)\s*=\s*null",
+                    script,
+                )
+                if "meteor" in name.lower()
+                and any(term in name.lower() for term in ("settings", "payload"))
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            saved_settings,
+            "Speaker audio must preserve the exact pre-listen meteor settings",
+        )
+        assert saved_settings is not None
+        stop_branch = toggle[: toggle.index("return;")]
+        start_branch = toggle[toggle.index("return;") :]
+        self.assertIn(saved_settings, stop_branch)
+        self.assertNotIn(
+            'postSettings("/api/live/tune", meteorPayload())',
+            stop_branch,
+            "Stopping audio must use the saved settings, not recompute current form values",
+        )
+        snapshot_assignment = start_branch.index(f"{saved_settings} =")
+        radio_tune = start_branch.index('postSettings("/api/live/tune", payload)')
+        self.assertLess(snapshot_assignment, radio_tune)
+
+        stop_audio = toggle.index("await stopAudio()")
+        restore_meteor = stop_branch.index('postSettings("/api/live/tune"')
+        self.assertLess(stop_audio, restore_meteor)
+        clear_snapshot = stop_branch.find(f"{saved_settings} = null", restore_meteor)
+        self.assertGreater(
+            clear_snapshot,
+            restore_meteor,
+            "Discard the saved settings only after the restore request succeeds",
+        )
+        self.assertIn("const payload = radioPayload()", toggle)
+        self.assertIn('postSettings("/api/live/tune", payload)', toggle)
+        self.assertIn("radioCheckActive = false", toggle)
+        audio_ui = javascript_function(script, "updateAudioUi")
+        self.assertIn('const live = monitorState === "running"', audio_ui)
+        self.assertRegex(
+            audio_ui,
+            r"elements\.audioButton\.disabled\s*=\s*!live\s*\|\|\s*audioTransitionBusy",
+        )
+        self.assertNotIn(
+            "elements.audioButton.textContent",
+            audio_ui,
+            "Updating listen state must not delete the speaker icon",
+        )
+        self.assertNotIn("Play local FM 94.9", body)
+        self.assertNotIn("Play local FM 94.9", script)
+
         self.assertIn("const METEOR_SPAN_HZ = 1_024_000", script)
         self.assertIn("status.receiver?.detected", script)
-        self.assertIn("Stop audio & restore meteor watch", script)
         self.assertIn("queuedBytes < 8192", script)
         self.assertIn("audioNextTime <= audioContext.currentTime + .005", script)
+
+        pagehide = script[
+            script.index('window.addEventListener("pagehide"') : script.index(
+                "setSensitivity(8);"
+            )
+        ]
+        self.assertIn(saved_settings, pagehide)
+
+        activation_catch = start_branch[start_branch.index("} catch (error) {") :]
+        status_request = activation_catch.index('request("/api/live/status")')
+        status_apply = activation_catch.index("applyStatus(status)")
+        self.assertLess(status_request, status_apply)
+        self.assertIn('status.settings?.observation_mode === "radio_check"', activation_catch)
+        self.assertIn(
+            f'postSettings("/api/live/tune", {saved_settings})',
+            activation_catch,
+        )
+        self.assertIn("if (restored)", activation_catch)
+        self.assertGreater(
+            activation_catch.index(f"{saved_settings} = null"),
+            activation_catch.index("if (restored)"),
+        )
 
     def test_static_assets_are_served_without_cache(self) -> None:
         for path, content_type in (
@@ -317,6 +467,61 @@ class DashboardHttpTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual(status_code, 409)
         self.assertEqual(payload["error"], "receiver is not running")
+
+    def test_audio_stream_rejects_running_meteor_mode(self) -> None:
+        running_meteor = {
+            "state": "running",
+            "settings": {"observation_mode": "meteor"},
+        }
+        stopped_meteor = {
+            "state": "stopped",
+            "settings": {"observation_mode": "meteor"},
+        }
+        with patch.object(
+            self.monitor,
+            "status",
+            side_effect=(running_meteor, stopped_meteor),
+        ):
+            status_code, body, _ = self.get("/api/live/audio")
+
+        self.assertEqual(status_code, 409)
+        payload = json.loads(body)
+        error = payload["error"].lower().replace("_", " ").replace("-", " ")
+        self.assertTrue(
+            "radio check" in error or "speaker" in error,
+            "The response should explain how to enter the permitted audio mode",
+        )
+
+    def test_open_audio_stream_ends_when_audio_becomes_unavailable(self) -> None:
+        listening = {
+            "state": "running",
+            "settings": {"observation_mode": "radio_check"},
+            "audio": {"available": True},
+        }
+        retuning = {
+            "state": "running",
+            "settings": {"observation_mode": "radio_check"},
+            "audio": {"available": False},
+        }
+        with (
+            patch.object(
+                self.monitor,
+                "status",
+                side_effect=(listening, retuning),
+            ) as status,
+            patch.object(self.monitor, "subscribe_audio", return_value=41) as subscribe,
+            patch.object(self.monitor, "wait_for_audio", return_value=None) as wait,
+            patch.object(self.monitor, "unsubscribe_audio") as unsubscribe,
+        ):
+            status_code, body, headers = self.get("/api/live/audio")
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(body, b"")
+        self.assertEqual(headers["content-type"], "application/octet-stream")
+        self.assertEqual(status.call_count, 2)
+        subscribe.assert_called_once_with()
+        wait.assert_called_once_with(41, timeout=2)
+        unsubscribe.assert_called_once_with()
 
 
 if __name__ == "__main__":

@@ -222,13 +222,17 @@ force the interface to redraw every radio block. The 160 kHz tuning offset keeps
    connected.
 3. Mount the Yagi with its elements horizontal.
 4. Aim the boom approximately 024 degrees true.
-5. If needed, use **Receiver audio check** briefly to prove the hardware can
-   receive a known local FM station.
-6. Stop the audio check so the app restores Meteor Watch.
-7. Select **Calibrate meteor target**. This clears mixed-frequency data, starts
-   a new background, and refills the 30-second memory.
-8. Observe 95.3 MHz. Do not use it if a station is continuously present.
-9. Wait until the detector and 30-second evidence memory both report ready.
+5. Click the speaker button briefly to listen to the selected target using the
+   250 kHz wide-FM monitor.
+6. Expect hiss or weak noise when the channel is suitably absent. If continuous
+   recognizable speech or music is present, choose another target frequency or
+   antenna heading.
+7. Stop the speaker monitor. Meteor Watch restores its full capture span,
+   restarts background learning, and clears and refills the 30-second evidence
+   memory.
+8. Select **Calibrate meteor target** after any target, gain, cable, or antenna
+   change.
+9. Wait until the detector and evidence memory both report ready.
 10. Leave the antenna, frequency, gain, and cables unchanged while observing.
 11. Review every saved candidate as possible meteor, interference, or unsure.
 
@@ -236,21 +240,35 @@ Calibrating does not magically prove the channel is quiet. It learns the local
 background; the operator still needs to check for continuous reception and
 repeating interference.
 
-## The receiver audio check
+## The selected-target speaker monitor
 
-The small audio section tunes to local FM 94.9 only to confirm that the receiver
-can produce understandable audio.
+The floating speaker button temporarily listens to the currently selected FM
+target, 95.3 MHz by default. It uses a 250 kHz RF capture span: enough to cover
+one 200 kHz U.S. FM broadcast channel with a small amount of margin.
 
-While it is active:
+Turn the computer volume down before starting. With no receivable station,
+wide-FM normally produces hiss rather than literal silence. A possible
+forward-scatter burst could sound like a very short fragment of distant speech
+or music, a flutter, or a pop. Broadcast FM is modulated, so it may not sound
+like a clean radar-style “ping.”
+
+The purpose of this mode is to decide whether the selected target is normally
+absent. Continuous intelligible programming means that a local, co-channel, or
+persistently propagated station is present and the frequency is unsuitable for
+simple transient monitoring at that antenna heading.
+
+While speaker mode is active:
 
 - Meteor Watch is paused.
 - Candidate detection and saving are disabled.
-- No radio-test signal can be mislabeled as a new meteor candidate.
-- Stopping audio restores the 95.3 MHz meteor profile and starts fresh
-  calibration and buffering.
+- No event heard during listening is archived automatically.
+- Stopping audio restores the full meteor profile and begins fresh calibration
+  and 30-second buffering.
 
-Audio is not the scientific meteor record. Signal power, timing, raw I/Q, and
-frequency-versus-time evidence are more useful.
+Audio alone cannot confirm a meteor echo. Aircraft, tropospheric propagation,
+other same-frequency transmitters, and local interference can all create brief
+sounds. Treat audio only as a setup and review aid; the candidate evidence is
+the raw I/Q, relative-power profile, timing, metadata, and waterfall context.
 
 ## Common false positives
 

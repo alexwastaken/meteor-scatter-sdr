@@ -209,6 +209,10 @@ class RtlPyStream:
                     self._sdr.gain = "auto" if config.gain_db is None else config.gain_db
             except Exception as exc:
                 self._last_error = str(exc)
+                # A setter may have succeeded before a later one failed. The
+                # cached configuration is no longer trustworthy, so a caller's
+                # rollback must reapply every hardware setting.
+                self._config = None
                 raise RtlSdrError(
                     f"PyRTLSDR tuning failed: {exc}",
                     receiver_info=self._identity,

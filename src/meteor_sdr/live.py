@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Condition, Event, RLock, Thread
+from threading import Condition, Event, Lock, RLock, Thread
 from typing import Any, Callable, Protocol
 import hashlib
 import json
@@ -467,6 +467,8 @@ class LiveMonitor:
         self._settings: LiveSettings | None = None
         self._settings_revision = 0
         self._radio_revision = 0
+        self._tune_lock = Lock()
+        self._retuning = False
         self._state = "stopped"
         self._error: str | None = None
         self._sequence = 0
@@ -502,6 +504,7 @@ class LiveMonitor:
             self._settings_revision += 1
             self._radio_revision += 1
             self._state = "starting"
+            self._retuning = False
             self._error = None
             self._frame = None
             self._buffer_seconds = 0.0
@@ -523,27 +526,69 @@ class LiveMonitor:
         with self._condition:
             if self._state != "error":
                 self._state = "stopped"
+            self._retuning = False
             self._condition.notify_all()
             return self.status_locked()
 
     def tune(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Retune the persistent rtl_tcp source without restarting the receiver."""
         settings = settings_from_payload(self.base_config, payload)
-        with self._condition:
-            if self._state not in {"starting", "running"}:
-                raise RtlSdrError("start monitoring before using live tuning")
-            stream = self._stream
-        if stream is not None:
-            stream.tune(settings.config)
-        with self._condition:
-            if self._state not in {"starting", "running"}:
-                raise RtlSdrError("receiver stopped while it was being tuned")
-            self._settings = settings
-            self._settings_revision += 1
-            self._radio_revision += 1
-            self._buffer_seconds = 0.0
-            self._condition.notify_all()
-            return self.status_locked()
+        with self._tune_lock:
+            with self._condition:
+                if self._state not in {"starting", "running"}:
+                    raise RtlSdrError("start monitoring before using live tuning")
+                stream = self._stream
+                previous_settings = self._settings
+                self._retuning = True
+                self._condition.notify_all()
+            try:
+                if stream is not None:
+                    stream.tune(settings.config)
+            except Exception as exc:
+                rollback_error: Exception | None = None
+                if stream is not None and previous_settings is not None:
+                    try:
+                        stream.tune(previous_settings.config)
+                    except Exception as rollback_exc:
+                        rollback_error = rollback_exc
+                with self._condition:
+                    self._retuning = False
+                    if rollback_error is not None:
+                        self._state = "error"
+                        self._error = (
+                            f"receiver tuning failed ({exc}); restoring the previous "
+                            f"settings also failed ({rollback_error})"
+                        )
+                        self._receiver_info["connected"] = False
+                        self._receiver_info["error_stage"] = "tuning"
+                        self._stop.set()
+                    else:
+                        # The hardware crossed a tuning boundary before the
+                        # rollback. Rebuild analysis state and discard the
+                        # first post-retune bytes even though settings are back
+                        # where they started.
+                        self._radio_revision += 1
+                        self._buffer_seconds = 0.0
+                        self._audio_chunk = None
+                    self._condition.notify_all()
+                if rollback_error is not None:
+                    if stream is not None:
+                        stream.close()
+                    raise RtlSdrError(self._error or "receiver tuning failed") from exc
+                raise
+            with self._condition:
+                if self._state not in {"starting", "running"}:
+                    self._retuning = False
+                    self._condition.notify_all()
+                    raise RtlSdrError("receiver stopped while it was being tuned")
+                self._settings = settings
+                self._settings_revision += 1
+                self._radio_revision += 1
+                self._buffer_seconds = 0.0
+                self._audio_chunk = None
+                self._retuning = False
+                self._condition.notify_all()
+                return self.status_locked()
 
     def watch(self, payload: dict[str, Any]) -> dict[str, Any]:
         if set(payload) != {"detection_frequency_hz"}:
@@ -582,7 +627,7 @@ class LiveMonitor:
             "buffer_target_seconds": BUFFER_SECONDS,
             "candidate_count": self._candidate_count,
             "audio": {
-                "available": self._state == "running",
+                "available": self._audio_available_locked(),
                 "sample_rate_hz": AUDIO_SAMPLE_RATE_HZ,
                 "listeners": self._audio_clients,
             },
@@ -615,6 +660,10 @@ class LiveMonitor:
 
     def subscribe_audio(self) -> int:
         with self._condition:
+            if not self._audio_available_locked():
+                raise RtlSdrError(
+                    "receiver audio is available only while speaker mode is active"
+                )
             self._audio_clients += 1
             return self._audio_sequence
 
@@ -628,17 +677,29 @@ class LiveMonitor:
         with self._condition:
             self._condition.wait_for(
                 lambda: self._audio_sequence > after_sequence
-                or self._state in {"error", "stopped"},
+                or not self._audio_available_locked(),
                 timeout=timeout,
             )
+            if not self._audio_available_locked():
+                return None
             if self._audio_sequence > after_sequence and self._audio_chunk is not None:
                 return self._audio_sequence, self._audio_chunk
             return None
+
+    def _audio_available_locked(self) -> bool:
+        return (
+            self._state == "running"
+            and not self._retuning
+            and self._settings is not None
+            and self._settings.observation_mode == "radio_check"
+        )
 
     def _publish_audio(self, pcm: bytes) -> None:
         if not pcm:
             return
         with self._condition:
+            if not self._audio_available_locked() or not self._audio_clients:
+                return
             self._audio_sequence += 1
             self._audio_chunk = pcm
             self._condition.notify_all()
@@ -753,6 +814,8 @@ class LiveMonitor:
                 if block == b"":
                     break
                 with self._condition:
+                    if self._retuning:
+                        continue
                     if self._radio_revision != radio_revision:
                         assert self._settings is not None
                         settings = self._settings
@@ -782,11 +845,12 @@ class LiveMonitor:
                             settings.detection_frequency_hz
                             - config.center_frequency_hz,
                         )
+                    block_radio_revision = radio_revision
                 if discard_bytes:
                     discard_bytes = max(0, discard_bytes - len(block))
                     continue
                 ring.append(block)
-                if self._audio_clients:
+                if settings.observation_mode == "radio_check" and self._audio_clients:
                     self._publish_audio(audio_demodulator.process(block))
                 if len(block) < FFT_SIZE * 2:
                     continue
@@ -817,52 +881,67 @@ class LiveMonitor:
                         reference_excess_db=0.0,
                         effective_threshold_db=settings.threshold_db,
                     )
-                buffer_seconds = ring.byte_count / (config.sample_rate_hz * 2)
-                archived = False
-                if (
-                    settings.observation_mode == "meteor"
-                    and detection.completed
-                    and ring.fill_ratio >= 0.999
-                ):
-                    archived = True
-                    self._candidate_count += 1
-                    self._writer.submit(
-                        self._archive,
-                        ring.snapshot_chunks(),
-                        settings,
-                        detection,
-                    )
-                if (
-                    not archived
-                    and frame_time - last_publish_time < 1 / DISPLAY_FRAME_RATE_HZ
-                ):
-                    continue
-                last_publish_time = frame_time
-                frame = {
-                    "sequence": self._sequence + 1,
-                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                    "spectrum_db": [round(float(value), 1) for value in spectrum],
-                    "lower_edge_hz": config.lower_edge_hz,
-                    "upper_edge_hz": config.upper_edge_hz,
-                    "detection_frequency_hz": settings.detection_frequency_hz,
-                    "target_level_db": round(level, 1),
-                    "reference_level_db": round(reference_level, 1),
-                    "reference_excess_db": round(detection.reference_excess_db, 1),
-                    "baseline_db": (
-                        None
-                        if detection.baseline_db is None
-                        else round(detection.baseline_db, 1)
-                    ),
-                    "excess_db": round(detection.excess_db, 1),
-                    "threshold_db": round(detection.effective_threshold_db, 1),
-                    "buffer_seconds": round(buffer_seconds, 2),
-                    "detector_ready": detector.ready,
-                    "detector_readiness": round(detector.readiness, 3),
-                    "detector_active": detection.active,
-                    "observation_mode": settings.observation_mode,
-                    "archived": archived,
-                }
                 with self._condition:
+                    # A retune may finish while spectrum analysis is in flight.
+                    # Never publish or archive that now-stale block under the old
+                    # observation mode.
+                    if (
+                        self._retuning
+                        or self._radio_revision != block_radio_revision
+                    ):
+                        continue
+                    buffer_seconds = ring.byte_count / (config.sample_rate_hz * 2)
+                    archived = False
+                    if (
+                        settings.observation_mode == "meteor"
+                        and detection.completed
+                        and ring.fill_ratio >= 0.999
+                    ):
+                        archived = True
+                        self._candidate_count += 1
+                        self._writer.submit(
+                            self._archive,
+                            ring.snapshot_chunks(),
+                            settings,
+                            detection,
+                        )
+                    if (
+                        not archived
+                        and frame_time - last_publish_time
+                        < 1 / DISPLAY_FRAME_RATE_HZ
+                    ):
+                        continue
+                    last_publish_time = frame_time
+                    frame = {
+                        "sequence": self._sequence + 1,
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "spectrum_db": [
+                            round(float(value), 1) for value in spectrum
+                        ],
+                        "lower_edge_hz": config.lower_edge_hz,
+                        "upper_edge_hz": config.upper_edge_hz,
+                        "detection_frequency_hz": settings.detection_frequency_hz,
+                        "target_level_db": round(level, 1),
+                        "reference_level_db": round(reference_level, 1),
+                        "reference_excess_db": round(
+                            detection.reference_excess_db, 1
+                        ),
+                        "baseline_db": (
+                            None
+                            if detection.baseline_db is None
+                            else round(detection.baseline_db, 1)
+                        ),
+                        "excess_db": round(detection.excess_db, 1),
+                        "threshold_db": round(
+                            detection.effective_threshold_db, 1
+                        ),
+                        "buffer_seconds": round(buffer_seconds, 2),
+                        "detector_ready": detector.ready,
+                        "detector_readiness": round(detector.readiness, 3),
+                        "detector_active": detection.active,
+                        "observation_mode": settings.observation_mode,
+                        "archived": archived,
+                    }
                     self._sequence += 1
                     frame["sequence"] = self._sequence
                     self._frame = frame
@@ -873,6 +952,7 @@ class LiveMonitor:
                 raise RtlSdrError(detail or "rtl_tcp closed the live stream")
         except (OSError, RtlSdrError, ValueError) as exc:
             with self._condition:
+                self._retuning = False
                 self._state = "error"
                 self._error = str(exc)
                 detected_receiver = (
@@ -899,6 +979,7 @@ class LiveMonitor:
                 stream.close()
             self._stream = None
             with self._condition:
+                self._retuning = False
                 if self._state != "error":
                     self._state = "stopped"
                     self._receiver_info["connected"] = False

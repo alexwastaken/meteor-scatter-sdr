@@ -26,8 +26,10 @@ a meteor.
 - Stores receiver, antenna, observer, target, duration, rise, and integrity
   metadata with new candidates.
 - Uses a fixed 28 dB tuner gain so AGC jumps cannot resemble meteor echoes.
-- Separates the local-FM audio check into a no-visual mode that disables meteor
-  detection and candidate saving, then restores the meteor profile automatically.
+- Provides a 250 kHz wide-FM speaker mode for the selected target frequency.
+  Speaker mode pauses meteor detection and saving; stopping it restores the
+  full meteor profile and restarts calibration and the 30-second evidence
+  memory.
 - Keeps simulated training candidates visually separate from physical RF data.
 
 Automatic candidates are never labeled “confirmed meteor.” Aircraft,
@@ -131,10 +133,11 @@ spectrum for broadband-interference rejection. Rates above 300 kS/s through
 1.024 MS/s, the 30-second memory and each raw candidate are about 61.4 MB.
 
 The main known complication is KLLY on 95.3 MHz near Oildale, California,
-approximately 324 km away. Before leaving the station armed, use the receiver
-audio check and observe the channel. If continuous programming or persistent
-reception is present at the actual antenna heading, 95.3 MHz is unsuitable and
-another distant, normally absent transmitter must be selected.
+approximately 324 km away. Before leaving the station armed, click the speaker
+button and listen briefly at the actual antenna heading. Steady hiss is normal
+when no FM station is being received. If music, speech, or another recognizable
+station remains continuously present, 95.3 MHz is not quiet enough for this
+setup and another distant, normally absent transmitter should be selected.
 
 The former 98.5 MHz default was removed because licensed transmitters in
 Cathedral City and Las Vegas are close enough to increase direct and
@@ -164,19 +167,32 @@ The dashed **watch marker** is a screen overlay, not a transmitted or received
 signal. The muted **receiver center** marker identifies where a stationary
 RTL-SDR center artifact may appear.
 
-## Receiver audio check
+## Selected-target speaker monitor
 
-Open the collapsed **Receiver audio check** section and select **Play local FM
-94.9**. This is only a hardware test:
+The floating speaker button temporarily tunes a 250 kHz wide-FM receiver to the
+currently selected target frequency, 95.3 MHz by default. A U.S. FM broadcast
+channel is 200 kHz wide, so this span covers the complete channel with a small
+margin on each side.
 
-- no spectrum or waterfall is shown for the audio check;
+Start with the computer volume low. On a suitable target, the usual sound is FM
+hiss or weak noise—not necessarily silence. A brief reflected broadcast might
+sound like a fragment of speech or music, a fluttering burst, or a pop. Do not
+expect every event to produce a clean “ping.”
+
+While speaker mode is active:
+
+- the waterfall and power display are paused;
 - meteor detection and candidate saving are disabled;
-- browser audio uses a filtered mono-FM decoder;
-- stopping the check restores 95.3 MHz, the offset meteor center, detector
-  calibration, and the 30-second memory.
+- the browser plays filtered mono wide-FM audio but does not save it as
+  candidate evidence;
+- stopping the speaker restores the 1.024 MHz meteor profile and restarts
+  detector calibration and the 30-second evidence memory.
 
-Audio is not the scientific meteor record. Raw I/Q, the derived echo-power
-profile, metadata, and waterfall evidence are the useful observation products.
+Continuous understandable programming is a reason to reject the target, not a
+meteor detection. A brief sound is also not confirmation: aircraft, changing
+propagation, co-channel stations, and electrical interference can produce
+similar audio. Raw I/Q, the relative-power profile, metadata, and
+frequency-versus-time evidence are the useful candidate record.
 
 ## Candidate evidence
 

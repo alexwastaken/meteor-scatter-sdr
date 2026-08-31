@@ -115,6 +115,81 @@ class RtlPyStreamTests(unittest.TestCase):
                 stream.close()
         self.assertTrue(instances[0].closed)
 
+    def test_failed_setter_invalidates_cache_so_rollback_reapplies_hardware(self) -> None:
+        instances = []
+
+        class FakePyRtlSdr:
+            def __init__(self, **arguments) -> None:
+                self.arguments = arguments
+                self.sample_rates: list[int] = []
+                self.center_frequencies: list[int] = []
+                self.gains: list[float | str] = []
+                self.freq_correction = None
+                self.closed = False
+                instances.append(self)
+
+            @property
+            def sample_rate(self):
+                return self.sample_rates[-1] if self.sample_rates else None
+
+            @sample_rate.setter
+            def sample_rate(self, value: int) -> None:
+                self.sample_rates.append(value)
+
+            @property
+            def center_freq(self):
+                return self.center_frequencies[-1] if self.center_frequencies else None
+
+            @center_freq.setter
+            def center_freq(self, value: int) -> None:
+                self.center_frequencies.append(value)
+
+            @property
+            def gain(self):
+                return self.gains[-1] if self.gains else None
+
+            @gain.setter
+            def gain(self, value: float | str) -> None:
+                self.gains.append(value)
+                if value == 12.3:
+                    raise ValueError("gain setter failed after center frequency changed")
+
+            def read_bytes(self, size: int) -> bytearray:
+                return bytearray([127, 128]) * (size // 2)
+
+            def close(self) -> None:
+                self.closed = True
+
+        original = CaptureConfig(
+            center_frequency_hz=100_000_000,
+            sample_rate_hz=1_024_000,
+            gain_db=28,
+        )
+        failed = CaptureConfig(
+            center_frequency_hz=100_250_000,
+            sample_rate_hz=1_024_000,
+            gain_db=12.3,
+        )
+        module = types.ModuleType("rtlsdr")
+        module.RtlSdr = FakePyRtlSdr
+        with patch.dict(sys.modules, {"rtlsdr": module}):
+            stream = RtlPyStream(original)
+            try:
+                with self.assertRaisesRegex(RtlSdrError, "gain setter failed"):
+                    stream.tune(failed)
+                self.assertIsNone(stream._config)
+
+                stream.tune(original)
+                self.assertEqual(stream._config, original.validated())
+                self.assertEqual(instances[0].sample_rates, [1_024_000, 1_024_000])
+                self.assertEqual(
+                    instances[0].center_frequencies,
+                    [100_000_000, 100_250_000, 100_000_000],
+                )
+                self.assertEqual(instances[0].gains, [28, 12.3, 28])
+            finally:
+                stream.close()
+
     def test_tuning_error_preserves_the_opened_receiver_identity(self) -> None:
         class FakePyRtlSdr:
             def __init__(self, **arguments) -> None:

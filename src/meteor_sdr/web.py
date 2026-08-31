@@ -157,7 +157,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if status["state"] != "running":
             self._json(HTTPStatus.CONFLICT, {"error": "receiver is not running"})
             return
-        sequence = self.server.monitor.subscribe_audio()
+        if status["settings"]["observation_mode"] != "radio_check":
+            self._json(
+                HTTPStatus.CONFLICT,
+                {"error": "turn on the speaker before requesting receiver audio"},
+            )
+            return
+        try:
+            sequence = self.server.monitor.subscribe_audio()
+        except RtlSdrError as exc:
+            self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
+            return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Cache-Control", "no-cache, no-store")
@@ -171,7 +181,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             while True:
                 item = self.server.monitor.wait_for_audio(sequence, timeout=2)
                 if item is None:
-                    if self.server.monitor.status()["state"] != "running":
+                    current = self.server.monitor.status()
+                    if (
+                        current["state"] != "running"
+                        or current["settings"]["observation_mode"]
+                        != "radio_check"
+                        or not current["audio"]["available"]
+                    ):
                         break
                     continue
                 sequence, pcm = item

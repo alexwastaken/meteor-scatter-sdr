@@ -1,5 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
+from unittest.mock import PropertyMock, patch
 import json
 import time
 import unittest
@@ -274,29 +276,330 @@ class LivePipelineTests(unittest.TestCase):
             finally:
                 monitor.close()
 
-    def test_radio_check_mode_never_arms_or_archives(self) -> None:
+    def test_selected_frequency_radio_check_never_archives_and_restores_meteor_profile(
+        self,
+    ) -> None:
         with TemporaryDirectory() as temporary_directory:
+            selected_frequency = 95_300_000
+            meteor_center = 95_460_000
             monitor = LiveMonitor(
                 CaptureConfig(
-                    center_frequency_hz=94_900_000,
-                    sample_rate_hz=250_000,
+                    center_frequency_hz=meteor_center,
+                    sample_rate_hz=1_024_000,
+                    gain_db=28,
                     output_dir=Path(temporary_directory),
                 ),
                 source_factory=FakeRadioStream,
             )
             try:
-                monitor.start({"observation_mode": "radio_check"})
+                monitor.start(
+                    {
+                        "center_frequency_hz": selected_frequency,
+                        "detection_frequency_hz": selected_frequency,
+                        "sample_rate_hz": 250_000,
+                        "gain_db": 28,
+                        "threshold_db": 8,
+                        "observation_mode": "radio_check",
+                    }
+                )
                 frame = monitor.wait_for_frame(0, timeout=2)
                 self.assertIsNotNone(frame)
                 assert frame is not None
                 self.assertEqual(frame["observation_mode"], "radio_check")
+                self.assertEqual(frame["detection_frequency_hz"], selected_frequency)
+                self.assertEqual(frame["lower_edge_hz"], selected_frequency - 125_000)
+                self.assertEqual(frame["upper_edge_hz"], selected_frequency + 125_000)
                 self.assertFalse(frame["detector_ready"])
                 self.assertFalse(frame["detector_active"])
                 self.assertFalse(frame["archived"])
                 self.assertEqual(monitor.status()["candidate_count"], 0)
                 self.assertEqual(monitor.events(), [])
+
+                restored = monitor.tune(
+                    {
+                        "center_frequency_hz": meteor_center,
+                        "detection_frequency_hz": selected_frequency,
+                        "sample_rate_hz": 1_024_000,
+                        "gain_db": 28,
+                        "threshold_db": 8,
+                        "observation_mode": "meteor",
+                    }
+                )
+                self.assertEqual(restored["settings"]["observation_mode"], "meteor")
+                self.assertEqual(
+                    restored["settings"]["center_frequency_hz"], meteor_center
+                )
+                self.assertEqual(
+                    restored["settings"]["detection_frequency_hz"], selected_frequency
+                )
+                self.assertEqual(restored["settings"]["sample_rate_hz"], 1_024_000)
+                self.assertEqual(restored["buffer_seconds"], 0.0)
+
+                restored_frame = monitor.wait_for_frame(frame["sequence"], timeout=2)
+                self.assertIsNotNone(restored_frame)
+                assert restored_frame is not None
+                self.assertEqual(restored_frame["observation_mode"], "meteor")
+                self.assertEqual(
+                    restored_frame["detection_frequency_hz"], selected_frequency
+                )
+                self.assertEqual(restored_frame["lower_edge_hz"], 94_948_000)
+                self.assertEqual(restored_frame["upper_edge_hz"], 95_972_000)
+                self.assertFalse(restored_frame["archived"])
+                self.assertEqual(monitor.status()["candidate_count"], 0)
+                self.assertEqual(monitor.events(), [])
             finally:
                 monitor.close()
+
+    def test_retune_suppresses_in_flight_meteor_frame_and_archive(self) -> None:
+        analysis_started = Event()
+        release_analysis = Event()
+        second_read_started = Event()
+        release_second_read = Event()
+
+        class GatedRadioStream(FakeRadioStream):
+            def __init__(self, config: CaptureConfig) -> None:
+                super().__init__(config)
+                self.read_count = 0
+
+            def read(self, size: int) -> bytes:
+                self.read_count += 1
+                if self.read_count > 1:
+                    second_read_started.set()
+                    while not self.closed and not release_second_read.wait(0.01):
+                        pass
+                    if self.closed:
+                        return b""
+                return super().read(size)
+
+        original_analyze = SpectrumAnalyzer.analyze
+
+        def gated_analyze(analyzer: SpectrumAnalyzer, iq_bytes: bytes) -> np.ndarray:
+            if not analysis_started.is_set():
+                analysis_started.set()
+                if not release_analysis.wait(2):
+                    raise AssertionError("test did not release in-flight spectrum analysis")
+            return original_analyze(analyzer, iq_bytes)
+
+        completed_candidate = DetectionResult(
+            completed=True,
+            active=False,
+            excess_db=10.0,
+            baseline_db=-50.0,
+            reference_excess_db=0.5,
+            effective_threshold_db=8.0,
+            duration_seconds=0.2,
+            peak_excess_db=10.0,
+            peak_level_db=-40.0,
+            peak_reference_excess_db=0.5,
+            profile="underdense_like",
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            monitor = LiveMonitor(
+                CaptureConfig(output_dir=Path(temporary_directory)),
+                source_factory=GatedRadioStream,
+            )
+            try:
+                with (
+                    patch.object(SpectrumAnalyzer, "analyze", new=gated_analyze),
+                    patch.object(
+                        CandidateDetector,
+                        "update",
+                        return_value=completed_candidate,
+                    ),
+                    patch.object(
+                        RollingIqBuffer,
+                        "fill_ratio",
+                        new_callable=PropertyMock,
+                        return_value=1.0,
+                    ),
+                    patch.object(monitor, "_archive") as archive,
+                ):
+                    monitor.start(
+                        {
+                            "detection_frequency_hz": 95_300_000,
+                            "observation_mode": "meteor",
+                        }
+                    )
+                    self.assertTrue(analysis_started.wait(2))
+
+                    tuned = monitor.tune(
+                        {
+                            "center_frequency_hz": 95_300_000,
+                            "detection_frequency_hz": 95_300_000,
+                            "sample_rate_hz": 250_000,
+                            "gain_db": 28,
+                            "threshold_db": 8,
+                            "observation_mode": "radio_check",
+                        }
+                    )
+                    self.assertEqual(
+                        tuned["settings"]["observation_mode"], "radio_check"
+                    )
+
+                    release_analysis.set()
+                    self.assertTrue(second_read_started.wait(2))
+                    self.assertIsNone(monitor.wait_for_frame(0, timeout=0.1))
+                    self.assertEqual(monitor.status()["candidate_count"], 0)
+                    archive.assert_not_called()
+                    self.assertEqual(monitor.events(), [])
+
+                    release_second_read.set()
+                    radio_frame = monitor.wait_for_frame(0, timeout=2)
+                    self.assertIsNotNone(radio_frame)
+                    assert radio_frame is not None
+                    self.assertEqual(radio_frame["observation_mode"], "radio_check")
+                    self.assertFalse(radio_frame["archived"])
+                    archive.assert_not_called()
+            finally:
+                release_analysis.set()
+                release_second_read.set()
+                monitor.close()
+
+    def test_failed_tune_rolls_back_and_keeps_previous_profile_running(self) -> None:
+        sources: list[FakeRadioStream] = []
+
+        class RecoverableTuneStream(FakeRadioStream):
+            def __init__(self, config: CaptureConfig) -> None:
+                super().__init__(config)
+                self.fail_next_tune = True
+                self.pause_reads = Event()
+                self.read_paused = Event()
+                self.resume_reads = Event()
+
+            def read(self, size: int) -> bytes:
+                if self.pause_reads.is_set():
+                    self.read_paused.set()
+                    while not self.closed and not self.resume_reads.wait(0.01):
+                        pass
+                    if self.closed:
+                        return b""
+                return super().read(size)
+
+            def tune(self, config: CaptureConfig) -> None:
+                self.tuned.append(config)
+                if self.fail_next_tune:
+                    self.fail_next_tune = False
+                    raise RtlSdrError("requested radio settings were rejected")
+                self.config = config
+
+        def factory(config: CaptureConfig) -> RecoverableTuneStream:
+            source = RecoverableTuneStream(config)
+            sources.append(source)
+            return source
+
+        monitor = LiveMonitor(CaptureConfig(), source_factory=factory)
+        try:
+            monitor.start(
+                {
+                    "detection_frequency_hz": 95_300_000,
+                    "observation_mode": "meteor",
+                }
+            )
+            first = monitor.wait_for_frame(0, timeout=2)
+            self.assertIsNotNone(first)
+            assert first is not None
+            previous = monitor.status()["settings"]
+            sources[0].pause_reads.set()
+            self.assertTrue(sources[0].read_paused.wait(2))
+            with monitor._condition:
+                monitor._buffer_seconds = 29.0
+                monitor._audio_chunk = b"stale audio"
+                previous_radio_revision = monitor._radio_revision
+
+            with self.assertRaisesRegex(RtlSdrError, "settings were rejected"):
+                monitor.tune(
+                    {
+                        "center_frequency_hz": 95_300_000,
+                        "detection_frequency_hz": 95_300_000,
+                        "sample_rate_hz": 250_000,
+                        "gain_db": 28,
+                        "threshold_db": 8,
+                        "observation_mode": "radio_check",
+                    }
+                )
+
+            status = monitor.status()
+            self.assertEqual(status["state"], "running")
+            self.assertEqual(status["settings"], previous)
+            self.assertTrue(status["receiver"]["connected"])
+            self.assertIsNone(status["receiver"]["error_stage"])
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["buffer_seconds"], 0.0)
+            self.assertFalse(monitor._retuning)
+            self.assertEqual(monitor._radio_revision, previous_radio_revision + 1)
+            self.assertIsNone(monitor._audio_chunk)
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(len(sources[0].tuned), 2)
+            self.assertEqual(sources[0].tuned[-1].center_frequency_hz, 95_460_000)
+            self.assertEqual(sources[0].tuned[-1].sample_rate_hz, 1_024_000)
+
+            with monitor._condition:
+                sequence_after_rollback = monitor._sequence
+            sources[0].resume_reads.set()
+            continued = monitor.wait_for_frame(sequence_after_rollback, timeout=2)
+            self.assertIsNotNone(continued)
+            assert continued is not None
+            self.assertEqual(continued["observation_mode"], "meteor")
+            self.assertEqual(continued["detection_frequency_hz"], 95_300_000)
+        finally:
+            if sources:
+                sources[0].resume_reads.set()
+            monitor.close()
+
+    def test_failed_tune_and_failed_rollback_enter_tuning_error(self) -> None:
+        sources: list[FakeRadioStream] = []
+
+        class UnrecoverableTuneStream(FakeRadioStream):
+            def tune(self, config: CaptureConfig) -> None:
+                self.tuned.append(config)
+                attempt = len(self.tuned)
+                raise RtlSdrError(f"tune attempt {attempt} failed")
+
+        def factory(config: CaptureConfig) -> UnrecoverableTuneStream:
+            source = UnrecoverableTuneStream(config)
+            sources.append(source)
+            return source
+
+        monitor = LiveMonitor(CaptureConfig(), source_factory=factory)
+        try:
+            monitor.start(
+                {
+                    "detection_frequency_hz": 95_300_000,
+                    "observation_mode": "meteor",
+                }
+            )
+            self.assertIsNotNone(monitor.wait_for_frame(0, timeout=2))
+
+            with self.assertRaisesRegex(
+                RtlSdrError,
+                "restoring the previous settings also failed",
+            ):
+                monitor.tune(
+                    {
+                        "center_frequency_hz": 95_300_000,
+                        "detection_frequency_hz": 95_300_000,
+                        "sample_rate_hz": 250_000,
+                        "gain_db": 28,
+                        "threshold_db": 8,
+                        "observation_mode": "radio_check",
+                    }
+                )
+
+            status = monitor.status()
+            self.assertEqual(status["state"], "error")
+            self.assertFalse(status["receiver"]["connected"])
+            self.assertTrue(status["receiver"]["detected"])
+            self.assertEqual(status["receiver"]["error_stage"], "tuning")
+            self.assertFalse(status["audio"]["available"])
+            self.assertIn("tune attempt 1 failed", status["error"])
+            self.assertIn("tune attempt 2 failed", status["error"])
+            self.assertEqual(status["settings"]["observation_mode"], "meteor")
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(len(sources[0].tuned), 2)
+            self.assertTrue(sources[0].closed)
+        finally:
+            monitor.close()
 
     def test_monitor_publishes_a_frame_from_streamed_iq(self) -> None:
         monitor = LiveMonitor(
@@ -314,8 +617,10 @@ class LivePipelineTests(unittest.TestCase):
             self.assertEqual(status["source"], "hardware")
             self.assertTrue(status["receiver"]["connected"])
             self.assertEqual(status["receiver"]["display_name"], "RTL-SDR receiver")
-            self.assertTrue(status["audio"]["available"])
+            self.assertFalse(status["audio"]["available"])
             self.assertEqual(status["audio"]["sample_rate_hz"], 32_000)
+            with self.assertRaisesRegex(RtlSdrError, "speaker mode"):
+                monitor.subscribe_audio()
         finally:
             monitor.close()
 
@@ -324,9 +629,13 @@ class LivePipelineTests(unittest.TestCase):
             CaptureConfig(sample_rate_hz=250_000),
             source_factory=FakeRadioStream,
         )
-        sequence = monitor.subscribe_audio()
+        subscribed = False
         try:
-            monitor.start({})
+            monitor.start({"observation_mode": "radio_check"})
+            frame = monitor.wait_for_frame(0, timeout=2)
+            self.assertIsNotNone(frame)
+            sequence = monitor.subscribe_audio()
+            subscribed = True
             item = monitor.wait_for_audio(sequence, timeout=2)
             self.assertIsNotNone(item)
             assert item is not None
@@ -335,7 +644,8 @@ class LivePipelineTests(unittest.TestCase):
             self.assertGreater(len(pcm), 0)
             self.assertEqual(len(pcm) % 2, 0)
         finally:
-            monitor.unsubscribe_audio()
+            if subscribed:
+                monitor.unsubscribe_audio()
             monitor.close()
 
     def test_live_tuning_reuses_stream_at_new_center(self) -> None:
