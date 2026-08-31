@@ -10,6 +10,8 @@ import tomllib
 FM_LOW_HZ = 87_500_000
 FM_HIGH_HZ = 108_000_000
 MIN_SAMPLE_RATE_HZ = 250_000
+LOW_SAMPLE_RATE_MAX_HZ = 300_000
+HIGH_SAMPLE_RATE_MIN_HZ = 900_001
 MAX_SAMPLE_RATE_HZ = 2_400_000
 MAX_RTL_SDR_SAMPLES = 2_000_000_000
 
@@ -22,7 +24,7 @@ class ConfigurationError(ValueError):
 class CaptureConfig:
     # Keep the 95.3 MHz research target away from the RTL-SDR center/DC bin.
     center_frequency_hz: int = 95_460_000
-    sample_rate_hz: int = 512_000
+    sample_rate_hz: int = 1_024_000
     # Fixed gain keeps AGC changes from resembling transient meteor echoes.
     gain_db: float | None = 28.0
     ppm: int = 0
@@ -56,6 +58,12 @@ class CaptureConfig:
             raise ConfigurationError(
                 f"sample rate must be between {MIN_SAMPLE_RATE_HZ} and "
                 f"{MAX_SAMPLE_RATE_HZ} samples/second"
+            )
+        if LOW_SAMPLE_RATE_MAX_HZ < self.sample_rate_hz < HIGH_SAMPLE_RATE_MIN_HZ:
+            raise ConfigurationError(
+                "RTL-SDR sample rates greater than 300000 through 900000 "
+                "samples/second "
+                "are unsupported; use 250000-300000 or 900001-2400000"
             )
         if self.lower_edge_hz < FM_LOW_HZ or self.upper_edge_hz > FM_HIGH_HZ:
             raise ConfigurationError(
@@ -96,11 +104,11 @@ def load_config(path: Path | None) -> CaptureConfig:
 
     radio = _table(raw, "radio")
     capture = _table(raw, "capture")
-    gain = _parse_gain(radio.get("gain_db", "auto"))
+    gain = _parse_gain(radio.get("gain_db", 28.0))
 
     config = CaptureConfig(
         center_frequency_hz=_integer(
-            radio.get("center_frequency_hz", 98_500_000), "center_frequency_hz"
+            radio.get("center_frequency_hz", 95_460_000), "center_frequency_hz"
         ),
         sample_rate_hz=_integer(
             radio.get("sample_rate_hz", 1_024_000), "sample_rate_hz"

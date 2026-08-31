@@ -121,13 +121,14 @@ candidate**, not a guaranteed meteor channel:
 - Approximate distance: **1,298 km**
 - Approximate true bearing from Carmel Valley: **024°**
 - Antenna: horizontal elements, Yagi boom pointed north-northeast
-- Capture window: **512 kHz**, centered at **95.460 MHz**
+- Capture window: **1.024 MHz**, centered at **95.460 MHz**
 - Fixed tuner gain: **28 dB**
 
 The offset center keeps the 95.3 MHz target away from the RTL-SDR center/DC
-artifact. The 512 kHz window is narrow enough to reduce unrelated FM activity
-while retaining surrounding spectrum for broadband-interference rejection. At
-this rate, the 30-second memory and each raw candidate are about 30.7 MB.
+artifact. The 1.024 MHz rate is supported by `librtlsdr` and retains surrounding
+spectrum for broadband-interference rejection. Rates above 300 kS/s through
+900 kS/s are rejected by the RTL-SDR driver, so 512 kS/s must not be used. At
+1.024 MS/s, the 30-second memory and each raw candidate are about 61.4 MB.
 
 The main known complication is KLLY on 95.3 MHz near Oildale, California,
 approximately 324 km away. Before leaving the station armed, use the receiver

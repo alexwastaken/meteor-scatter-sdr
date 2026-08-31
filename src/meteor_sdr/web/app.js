@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 
-const METEOR_SPAN_HZ = 512_000;
+const METEOR_SPAN_HZ = 1_024_000;
 const METEOR_CENTER_OFFSET_HZ = 160_000;
 const RADIO_CHECK_FREQUENCY_HZ = 94_900_000;
 const RADIO_CHECK_SPAN_HZ = 250_000;
@@ -103,9 +103,15 @@ function meteorTargetHz() {
 
 function meteorCenterHz(targetHz) {
   const halfSpan = METEOR_SPAN_HZ / 2;
+  const minimumCenter = FM_LOW_HZ + halfSpan;
+  const maximumCenter = FM_HIGH_HZ - halfSpan;
   const positive = targetHz + METEOR_CENTER_OFFSET_HZ;
-  if (positive + halfSpan <= FM_HIGH_HZ) return positive;
-  return Math.max(FM_LOW_HZ + halfSpan, targetHz - METEOR_CENTER_OFFSET_HZ);
+  if (positive >= minimumCenter && positive <= maximumCenter) return positive;
+
+  const negative = targetHz - METEOR_CENTER_OFFSET_HZ;
+  if (negative >= minimumCenter && negative <= maximumCenter) return negative;
+
+  return Math.min(maximumCenter, Math.max(minimumCenter, positive));
 }
 
 function meteorPayload() {
@@ -172,11 +178,12 @@ function applyReceiverStatus(status) {
   const receiver = status.receiver || { connected: false, display_name: "RTL-SDR not connected" };
   const demo = status.source === "simulation";
   const connected = !demo && Boolean(receiver.connected);
+  const detected = !demo && Boolean(receiver.detected || connected);
   elements.connection.classList.toggle("live", connected);
   elements.connection.classList.toggle("error", !demo && status.state === "error");
   elements.sourceBanner.classList.toggle("demo", demo);
   elements.sourceBanner.classList.toggle("connected", connected);
-  elements.sourceBanner.classList.toggle("disconnected", !demo && !connected);
+  elements.sourceBanner.classList.toggle("disconnected", !demo && !detected);
 
   if (demo) {
     elements.connectionLabel.textContent = "TRAINING DATA · NO SDR";
@@ -191,6 +198,16 @@ function applyReceiverStatus(status) {
     elements.receiverDetail.textContent = serial;
     elements.sourceTitle.textContent = "PHYSICAL RECEIVER VERIFIED";
     elements.sourceDetail.textContent = `${receiver.display_name || "RTL-SDR receiver"} · ${serial} · receive-only hardware`;
+  } else if (detected) {
+    const serial = receiver.serial ? `SERIAL ${receiver.serial}` : "USB RECEIVER";
+    const setupError = status.state === "error";
+    elements.connectionLabel.textContent = setupError ? "SDR DETECTED · SETUP ERROR" : "SDR DETECTED · WATCH PAUSED";
+    elements.receiverName.textContent = receiver.display_name || "RTL-SDR receiver";
+    elements.receiverDetail.textContent = serial;
+    elements.sourceTitle.textContent = setupError ? "PHYSICAL RECEIVER DETECTED" : "METEOR WATCH PAUSED";
+    elements.sourceDetail.textContent = setupError
+      ? "The USB receiver opened, but its radio settings could not be applied."
+      : "The receiver was verified and is currently closed until Meteor Watch starts again.";
   } else {
     elements.connectionLabel.textContent = status.state === "starting" ? "CHECKING USB" : "SDR NEEDS ATTENTION";
     elements.receiverName.textContent = "RTL-SDR NOT CONNECTED";
@@ -209,8 +226,11 @@ function updateDetectorStatus(status, frame = null) {
     return;
   }
   if (status.state === "error") {
-    elements.detectorState.textContent = "NEEDS RECEIVER";
-    elements.detectorDetail.textContent = "NO PHYSICAL RF STREAM";
+    const receiverFound = Boolean(status.receiver?.detected);
+    elements.detectorState.textContent = receiverFound ? "TUNING ERROR" : "NEEDS RECEIVER";
+    elements.detectorDetail.textContent = receiverFound
+      ? "RECEIVER FOUND · CHECK RADIO SETTINGS"
+      : "NO PHYSICAL RF STREAM";
     return;
   }
   if (status.state === "stopped") {
@@ -469,7 +489,7 @@ async function toggleMeteorWatch() {
 }
 
 async function retryHardware(status) {
-  if (status.source !== "hardware" || status.state !== "error" || hardwareRetryBusy || Date.now() - lastHardwareRetry < 4000) return;
+  if (status.source !== "hardware" || status.state !== "error" || status.receiver?.detected || hardwareRetryBusy || Date.now() - lastHardwareRetry < 4000) return;
   hardwareRetryBusy = true;
   lastHardwareRetry = Date.now();
   try {

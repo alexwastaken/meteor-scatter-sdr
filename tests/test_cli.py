@@ -1,6 +1,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import contextlib
 import io
 import unittest
@@ -10,6 +10,26 @@ from meteor_sdr.cli import main
 
 
 class CliTests(unittest.TestCase):
+    @patch("meteor_sdr.cli.RtlPyStream")
+    def test_doctor_checks_the_same_backend_as_the_live_app(self, stream_type) -> None:
+        stream = MagicMock()
+        stream.identity.return_value = {
+            "display_name": "Nooelec NESDR SMArt v5",
+            "serial": "33864718",
+        }
+        stream.read.return_value = bytes(8_192)
+        stream_type.return_value = stream
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = main(["doctor"])
+
+        self.assertEqual(exit_code, 0)
+        stream_type.assert_called_once()
+        stream.read.assert_called_once_with(8_192)
+        stream.close.assert_called_once()
+        self.assertIn("live backend: passed", output.getvalue())
+
     @patch("meteor_sdr.cli.capture_once")
     def test_explicit_auto_gain_overrides_config_file(self, capture_mock) -> None:
         with TemporaryDirectory() as temporary_directory:

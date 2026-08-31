@@ -8,8 +8,8 @@ import shutil
 import sys
 
 from .capture import capture_once
-from .config import ConfigurationError, load_config, parse_frequency, parse_gain
-from .rtl import RtlSdrError, device_diagnostic
+from .config import CaptureConfig, ConfigurationError, load_config, parse_frequency, parse_gain
+from .rtl import RtlPyStream, RtlSdrError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="meteor-sdr",
         description="Monitor RTL-SDR radio data for meteor-scatter experiments.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.7.2")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.7.3")
     commands = parser.add_subparsers(dest="command", required=True)
 
     doctor = commands.add_parser("doctor", help="check rtl-sdr tools and the USB device")
@@ -89,26 +89,36 @@ def _doctor(_: argparse.Namespace) -> int:
     rtl_sdr = shutil.which("rtl_sdr")
     rtl_test = shutil.which("rtl_test")
     pyrtlsdr = find_spec("rtlsdr")
-    print(f"rtl_sdr: {rtl_sdr or 'not found'}")
-    print(f"rtl_test: {rtl_test or 'not found'}")
+    print(f"rtl_sdr CLI: {rtl_sdr or 'not installed (optional for the live app)'}")
+    print(f"rtl_test CLI: {rtl_test or 'not installed (optional for the live app)'}")
     print(f"pyrtlsdr: {'available' if pyrtlsdr else 'not found in this Python environment'}")
-    if rtl_sdr is None or rtl_test is None:
-        print("Install both with: sudo apt update && sudo apt install rtl-sdr")
-        return 1
     if pyrtlsdr is None:
         print("Activate .venv and run: python -m pip install -e .")
         return 1
 
-    healthy, detail = device_diagnostic()
-    print(detail)
-    if not healthy:
+    stream: RtlPyStream | None = None
+    try:
+        stream = RtlPyStream(CaptureConfig().validated())
+        identity = stream.identity()
+        sample_bytes = stream.read(8_192)
+    except RtlSdrError as exc:
+        print(f"live backend: failed ({exc})", file=sys.stderr)
         print(
-            "The tools are installed, but the receiver did not pass its device check. "
-            "See the README troubleshooting section.",
+            "Close the Meteor SDR dashboard and any other SDR application, reconnect "
+            "the receiver, and run this check again.",
             file=sys.stderr,
         )
         return 1
-    print("RTL-SDR device check passed.")
+    finally:
+        if stream is not None:
+            stream.close()
+
+    print(
+        "live backend: passed · "
+        f"{identity.get('display_name') or 'RTL-SDR receiver'} · "
+        f"serial {identity.get('serial') or 'unavailable'} · "
+        f"{len(sample_bytes)} sample bytes"
+    )
     return 0
 
 

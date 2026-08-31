@@ -479,6 +479,8 @@ class LiveMonitor:
         self._started_at: str | None = None
         self._receiver_info: dict[str, Any] = {
             "connected": False,
+            "detected": False,
+            "error_stage": None,
             "display_name": (
                 "Meteor SDR simulated receiver"
                 if source_label == "simulation"
@@ -710,6 +712,8 @@ class LiveMonitor:
                 identity = identity_reader() if callable(identity_reader) else {}
                 self._receiver_info = {
                     "connected": True,
+                    "detected": True,
+                    "error_stage": None,
                     "display_name": identity.get(
                         "display_name",
                         "RTL-SDR receiver"
@@ -871,8 +875,23 @@ class LiveMonitor:
             with self._condition:
                 self._state = "error"
                 self._error = str(exc)
-                self._receiver_info["connected"] = False
-                if self._source_label == "hardware":
+                detected_receiver = (
+                    exc.receiver_info if isinstance(exc, RtlSdrError) else None
+                )
+                if self._source_label == "hardware" and detected_receiver:
+                    self._receiver_info = {
+                        **detected_receiver,
+                        "connected": False,
+                        "detected": True,
+                        "error_stage": exc.error_stage,
+                    }
+                else:
+                    self._receiver_info["connected"] = False
+                    self._receiver_info["detected"] = False
+                    self._receiver_info["error_stage"] = (
+                        exc.error_stage if isinstance(exc, RtlSdrError) else None
+                    )
+                if self._source_label == "hardware" and not detected_receiver:
                     self._receiver_info["display_name"] = "RTL-SDR not connected"
                 self._condition.notify_all()
         finally:
@@ -882,7 +901,7 @@ class LiveMonitor:
             with self._condition:
                 if self._state != "error":
                     self._state = "stopped"
-                self._receiver_info["connected"] = False
+                    self._receiver_info["connected"] = False
                 self._condition.notify_all()
 
     def _archive(

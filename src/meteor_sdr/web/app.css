@@ -255,7 +255,7 @@ figcaption { display: flex; justify-content: space-between; gap: 12px; margin-bo
 .waterfall-figure { margin-top: 19px; }
 .waterfall-wrap { position: relative; height: 392px; overflow: hidden; border: 1px solid #1b3440; background: #020507; }
 .watch-marker, .center-marker { position: absolute; z-index: 3; top: 0; bottom: 0; width: 1px; pointer-events: none; }
-.watch-marker { left: 18.75%; border-left: 1px dashed rgba(98, 221, 255, .92); }
+.watch-marker { left: 34.375%; border-left: 1px dashed rgba(98, 221, 255, .92); }
 .center-marker { left: 50%; background: rgba(87, 115, 128, .42); }
 .watch-marker span, .center-marker span { position: absolute; top: 7px; left: 7px; padding: 4px 6px; white-space: nowrap; background: rgba(2, 5, 7, .88); font: 8px var(--mono); letter-spacing: .06em; }
 .watch-marker span { color: var(--cyan-soft); }

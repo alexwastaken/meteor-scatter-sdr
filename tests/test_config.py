@@ -18,8 +18,20 @@ class ConfigTests(unittest.TestCase):
 
     def test_default_capture_size(self) -> None:
         config = CaptureConfig().validated()
-        self.assertEqual(config.sample_count, 5_120_000)
-        self.assertEqual(config.expected_bytes, 10_240_000)
+        self.assertEqual(config.sample_count, 10_240_000)
+        self.assertEqual(config.expected_bytes, 20_480_000)
+
+    def test_rejects_librtlsdr_unsupported_sample_rate_gap(self) -> None:
+        for sample_rate_hz in (300_001, 512_000, 900_000):
+            with self.subTest(sample_rate_hz=sample_rate_hz):
+                with self.assertRaisesRegex(ConfigurationError, "unsupported"):
+                    CaptureConfig(sample_rate_hz=sample_rate_hz).validated()
+        for sample_rate_hz in (250_000, 300_000, 900_001, 1_024_000):
+            with self.subTest(sample_rate_hz=sample_rate_hz):
+                self.assertEqual(
+                    CaptureConfig(sample_rate_hz=sample_rate_hz).validated().sample_rate_hz,
+                    sample_rate_hz,
+                )
 
     def test_default_meteor_profile_avoids_the_center_artifact(self) -> None:
         config = CaptureConfig().validated()
@@ -58,6 +70,16 @@ output_dir = "radio-data"
         self.assertEqual(config.gain_db, 28.0)
         self.assertEqual(config.device, "meteor-receiver")
         self.assertEqual(config.output_dir, Path("radio-data"))
+
+    def test_partial_config_uses_the_driver_safe_meteor_defaults(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "config.toml"
+            path.write_text("[radio]\nppm = 1\n", encoding="utf-8")
+            config = load_config(path)
+
+        self.assertEqual(config.center_frequency_hz, 95_460_000)
+        self.assertEqual(config.sample_rate_hz, 1_024_000)
+        self.assertEqual(config.gain_db, 28.0)
 
 
 if __name__ == "__main__":

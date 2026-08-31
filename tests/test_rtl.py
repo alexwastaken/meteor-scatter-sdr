@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from meteor_sdr.config import CaptureConfig
-from meteor_sdr.rtl import RtlPyStream, RtlTcpStream
+from meteor_sdr.rtl import RtlPyStream, RtlSdrError, RtlTcpStream
 
 
 class RtlTcpStreamTests(unittest.TestCase):
@@ -114,6 +114,45 @@ class RtlPyStreamTests(unittest.TestCase):
             finally:
                 stream.close()
         self.assertTrue(instances[0].closed)
+
+    def test_tuning_error_preserves_the_opened_receiver_identity(self) -> None:
+        class FakePyRtlSdr:
+            def __init__(self, **arguments) -> None:
+                self.arguments = arguments
+                self.freq_correction = None
+                self.center_freq = None
+                self.gain = None
+
+            @property
+            def sample_rate(self):
+                return None
+
+            @sample_rate.setter
+            def sample_rate(self, value) -> None:
+                raise ValueError(f"invalid rate {value}")
+
+            def close(self) -> None:
+                pass
+
+        identity = {
+            "display_name": "Nooelec NESDR SMArt v5",
+            "manufacturer": "Nooelec",
+            "product": "NESDR SMArt v5",
+            "serial": "33864718",
+            "driver_name": "RTL-SDR",
+        }
+        module = types.ModuleType("rtlsdr")
+        module.RtlSdr = FakePyRtlSdr
+        with (
+            patch.dict(sys.modules, {"rtlsdr": module}),
+            patch.object(RtlPyStream, "_read_identity", return_value=identity),
+            self.assertRaises(RtlSdrError) as raised,
+        ):
+            RtlPyStream(CaptureConfig(sample_rate_hz=1_024_000))
+
+        self.assertIn("PyRTLSDR tuning failed", str(raised.exception))
+        self.assertEqual(raised.exception.receiver_info, identity)
+        self.assertEqual(raised.exception.error_stage, "tuning")
 
 
 if __name__ == "__main__":

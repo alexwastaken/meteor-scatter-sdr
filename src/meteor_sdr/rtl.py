@@ -12,11 +12,24 @@ import threading
 import time
 from typing import Any
 
+import numpy as np
+
 from .config import CaptureConfig
 
 
 class RtlSdrError(RuntimeError):
     """Raised when rtl_sdr is missing or a capture fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        receiver_info: dict[str, str] | None = None,
+        error_stage: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.receiver_info = dict(receiver_info) if receiver_info else None
+        self.error_stage = error_stage
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,18 +136,33 @@ class RtlPyStream:
         device = config.device.strip()
         arguments: dict[str, Any]
         if device.isdigit():
-            arguments = {"device_index": int(device)}
+            device_index = int(device)
+            arguments = {"device_index": device_index}
         else:
+            device_index = PyRtlSdr.get_device_index_by_serial(device)
             arguments = {"serial_number": device}
         try:
             self._sdr = PyRtlSdr(**arguments)
         except Exception as exc:
-            raise RtlSdrError(f"PyRTLSDR could not open receiver {device}: {exc}") from exc
+            raise RtlSdrError(
+                f"PyRTLSDR could not open receiver {device}: {exc}",
+                error_stage="open",
+            ) from exc
 
         self._lock = threading.RLock()
         self._closed = False
         self._config: CaptureConfig | None = None
         self._last_error = ""
+        try:
+            self._identity = self._read_identity(device_index)
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            self._identity = {
+                "display_name": "RTL-SDR receiver",
+                "manufacturer": "",
+                "product": "",
+                "serial": device if not device.isdigit() else "",
+                "driver_name": "RTL-SDR",
+            }
         try:
             self.tune(config)
         except Exception:
@@ -162,8 +190,16 @@ class RtlPyStream:
             try:
                 if previous is None or previous.sample_rate_hz != config.sample_rate_hz:
                     self._sdr.sample_rate = config.sample_rate_hz
-                if previous is None or previous.ppm != config.ppm:
-                    self._sdr.freq_correction = config.ppm
+                if (previous is None or previous.ppm != config.ppm) and (
+                    config.ppm != 0 or previous is not None
+                ):
+                    try:
+                        self._sdr.freq_correction = config.ppm
+                    except Exception:
+                        # Some R820T2 macOS builds reject an explicit zero even
+                        # though zero is already the device default.
+                        if config.ppm != 0:
+                            raise
                 if (
                     previous is None
                     or previous.center_frequency_hz != config.center_frequency_hz
@@ -173,11 +209,63 @@ class RtlPyStream:
                     self._sdr.gain = "auto" if config.gain_db is None else config.gain_db
             except Exception as exc:
                 self._last_error = str(exc)
-                raise RtlSdrError(f"PyRTLSDR tuning failed: {exc}") from exc
+                raise RtlSdrError(
+                    f"PyRTLSDR tuning failed: {exc}",
+                    receiver_info=self._identity,
+                    error_stage="tuning",
+                ) from exc
             self._config = config
 
     def stderr_detail(self) -> str:
         return self._last_error
+
+    @staticmethod
+    def _read_identity(device_index: int) -> dict[str, str]:
+        from ctypes import c_ubyte
+        from rtlsdr.librtlsdr import librtlsdr
+
+        manufacturer_buffer = (c_ubyte * 256)()
+        product_buffer = (c_ubyte * 256)()
+        serial_buffer = (c_ubyte * 256)()
+        result = librtlsdr.rtlsdr_get_device_usb_strings(
+            device_index,
+            manufacturer_buffer,
+            product_buffer,
+            serial_buffer,
+        )
+
+        def decoded(buffer: object) -> str:
+            return bytes(buffer).split(b"\0", 1)[0].decode(
+                "utf-8", errors="replace"
+            ).strip()
+
+        manufacturer = decoded(manufacturer_buffer) if result == 0 else ""
+        product = decoded(product_buffer) if result == 0 else ""
+        serial = decoded(serial_buffer) if result == 0 else ""
+        raw_name = librtlsdr.rtlsdr_get_device_name(device_index)
+        driver_name = (
+            raw_name.decode("utf-8", errors="replace").strip()
+            if isinstance(raw_name, bytes)
+            else str(raw_name or "").strip()
+        )
+        if manufacturer and product:
+            display_name = (
+                product
+                if manufacturer.casefold() in product.casefold()
+                else f"{manufacturer} {product}"
+            )
+        else:
+            display_name = product or manufacturer or driver_name or "RTL-SDR receiver"
+        return {
+            "display_name": display_name,
+            "manufacturer": manufacturer,
+            "product": product,
+            "serial": serial,
+            "driver_name": driver_name,
+        }
+
+    def identity(self) -> dict[str, str]:
+        return dict(self._identity)
 
     def close(self) -> None:
         with self._lock:
@@ -188,6 +276,86 @@ class RtlPyStream:
                 self._sdr.close()
             except Exception as exc:
                 self._last_error = str(exc)
+
+
+class SimulatedRadioStream:
+    """Real-time synthetic I/Q source for learning the dashboard without hardware."""
+
+    _STATIONS = (99_720_000, 100_180_000, 100_365_000)
+    _PING_PERIOD_SECONDS = 14.0
+    _PING_START_SECONDS = 5.0
+    _PING_DURATION_SECONDS = 1.2
+
+    def __init__(self, config: CaptureConfig) -> None:
+        self._lock = threading.RLock()
+        self._closed = False
+        self._config = config.validated()
+        self._sample_index = 0
+        self._started = time.monotonic()
+        self._rng = np.random.default_rng(20260827)
+
+    def read(self, size: int) -> bytes:
+        started = time.monotonic()
+        with self._lock:
+            if self._closed:
+                return b""
+            config = self._config
+            sample_index = self._sample_index
+            sample_count = max(1, size // 2)
+            self._sample_index += sample_count
+
+        sample_rate = config.sample_rate_hz
+        sample_numbers = sample_index + np.arange(sample_count, dtype=np.float64)
+        signal = (
+            self._rng.normal(0.0, 0.038, sample_count)
+            + 1j * self._rng.normal(0.0, 0.038, sample_count)
+        )
+        half_span = sample_rate / 2
+        for index, station_hz in enumerate(self._STATIONS):
+            offset = station_hz - config.center_frequency_hz
+            if abs(offset) < half_span * 0.94:
+                amplitude = 0.08 + index * 0.018
+                signal += amplitude * np.exp(
+                    2j * np.pi * offset * sample_numbers / sample_rate
+                )
+
+        cycle = (time.monotonic() - self._started) % self._PING_PERIOD_SECONDS
+        ping_age = cycle - self._PING_START_SECONDS
+        if 0 <= ping_age < self._PING_DURATION_SECONDS:
+            envelope = np.sin(np.pi * ping_age / self._PING_DURATION_SECONDS) ** 2
+            signal += 0.62 * envelope
+
+        interleaved = np.empty(sample_count * 2, dtype=np.uint8)
+        interleaved[0::2] = np.clip(signal.real * 127.5 + 127.5, 0, 255)
+        interleaved[1::2] = np.clip(signal.imag * 127.5 + 127.5, 0, 255)
+
+        remaining = sample_count / sample_rate - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+        return interleaved.tobytes()[:size]
+
+    def tune(self, config: CaptureConfig) -> None:
+        with self._lock:
+            if self._closed:
+                raise RtlSdrError("simulated receiver is closed")
+            self._config = config.validated()
+            self._sample_index = 0
+
+    def stderr_detail(self) -> str:
+        return ""
+
+    def identity(self) -> dict[str, str]:
+        return {
+            "display_name": "Meteor SDR simulated receiver",
+            "manufacturer": "Meteor SDR",
+            "product": "Synthetic RF generator",
+            "serial": "DEMO",
+            "driver_name": "Simulation",
+        }
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
 
 
 class RtlTcpStream:

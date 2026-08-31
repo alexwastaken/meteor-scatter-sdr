@@ -2,9 +2,9 @@
 # Start in the FM broadcast band supported by the antenna.
 center_frequency_hz = 95460000
 
-# The curated meteor profile spans 512 kHz and keeps the 95.3 MHz target
+# The curated meteor profile spans 1.024 MHz and keeps the 95.3 MHz target
 # away from the RTL-SDR's center/DC artifact.
-sample_rate_hz = 512000
+sample_rate_hz = 1024000
 
 # A fixed gain prevents automatic-gain jumps from resembling an echo.
 gain_db = 28.0

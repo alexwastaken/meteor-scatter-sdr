@@ -63,7 +63,7 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertEqual(status["state"], "stopped")
         self.assertEqual(status["buffer_target_seconds"], 30.0)
         self.assertEqual(status["settings"]["observation_mode"], "meteor")
-        self.assertEqual(status["settings"]["sample_rate_hz"], 512_000)
+        self.assertEqual(status["settings"]["sample_rate_hz"], 1_024_000)
 
     def test_meteor_dashboard_contract(self) -> None:
         status_code, body_bytes, _ = self.get("/")
@@ -109,6 +109,8 @@ class DashboardHttpTests(unittest.TestCase):
         script = script_bytes.decode()
         self.assertIn('observation_mode: "radio_check"', script)
         self.assertIn('observation_mode: "meteor"', script)
+        self.assertIn("const METEOR_SPAN_HZ = 1_024_000", script)
+        self.assertIn("status.receiver?.detected", script)
         self.assertIn("Stop audio & restore meteor watch", script)
         self.assertIn("queuedBytes < 8192", script)
         self.assertIn("audioNextTime <= audioContext.currentTime + .005", script)

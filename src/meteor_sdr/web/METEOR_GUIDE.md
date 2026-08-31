@@ -149,8 +149,8 @@ meteor_candidate_....cu8.json
 ### Raw `.cu8`
 
 This is the actual radio evidence. Each complex sample is stored as one unsigned
-8-bit I value followed by one unsigned 8-bit Q value. At the default 512,000
-samples per second, a full 30-second candidate is about 30.7 MB.
+8-bit I value followed by one unsigned 8-bit Q value. At the default 1,024,000
+samples per second, a full 30-second candidate is about 61.4 MB.
 
 ### JSON metadata
 
@@ -194,7 +194,7 @@ The current built-in starting point is:
 - **Yagi polarization:** horizontal elements
 - **Yagi direction:** boom toward north-northeast, approximately 024 degrees
   true
-- **Capture span:** 512 kHz
+- **Capture span:** 1.024 MHz
 - **Receiver center:** 95.460 MHz
 - **Fixed tuner gain:** 28 dB
 
@@ -208,9 +208,11 @@ The former 98.5 MHz default was removed because licensed same-channel stations
 in Cathedral City and Las Vegas are close enough to create a higher risk of
 direct or tropospheric reception.
 
-The 512 kHz span is wider than one 200 kHz FM channel so the complete target and
-enough surrounding spectrum are available for interference comparison. It is
-still much narrower than the old 1.024 MHz view. The 160 kHz tuning offset keeps
+The 1.024 MHz span is a driver-supported rate that keeps the complete target
+and enough surrounding spectrum available for interference comparison. The
+RTL-SDR driver rejects the range above 300 kS/s through 900 kS/s, which includes
+512 kS/s. Browser drawing remains rate-limited so this wider capture does not
+force the interface to redraw every radio block. The 160 kHz tuning offset keeps
 95.3 MHz away from the receiver's center artifact.
 
 ## Calibration and a simple observing routine

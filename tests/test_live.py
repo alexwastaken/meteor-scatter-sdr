@@ -18,7 +18,7 @@ from meteor_sdr.live import (
     settings_from_payload,
     stream_read_size,
 )
-from meteor_sdr.rtl import SimulatedRadioStream
+from meteor_sdr.rtl import RtlSdrError, SimulatedRadioStream
 
 
 class FakeRadioStream:
@@ -45,6 +45,40 @@ class FakeRadioStream:
 
 
 class LivePipelineTests(unittest.TestCase):
+    def test_tuning_error_keeps_detected_receiver_separate_from_usb_failure(self) -> None:
+        identity = {
+            "display_name": "Nooelec NESDR SMArt v5",
+            "manufacturer": "Nooelec",
+            "product": "NESDR SMArt v5",
+            "serial": "33864718",
+            "driver_name": "RTL-SDR",
+        }
+
+        def failing_factory(config: CaptureConfig):
+            raise RtlSdrError(
+                "PyRTLSDR tuning failed: invalid sample rate",
+                receiver_info=identity,
+                error_stage="tuning",
+            )
+
+        monitor = LiveMonitor(CaptureConfig(), source_factory=failing_factory)
+        try:
+            monitor.start({})
+            deadline = time.monotonic() + 1
+            status = monitor.status()
+            while status["state"] != "error" and time.monotonic() < deadline:
+                time.sleep(0.01)
+                status = monitor.status()
+
+            self.assertEqual(status["state"], "error")
+            self.assertFalse(status["receiver"]["connected"])
+            self.assertTrue(status["receiver"]["detected"])
+            self.assertEqual(status["receiver"]["error_stage"], "tuning")
+            self.assertEqual(status["receiver"]["display_name"], identity["display_name"])
+            self.assertIn("tuning failed", status["error"])
+        finally:
+            monitor.close()
+
     def test_simulated_receiver_streams_and_retunes_without_hardware(self) -> None:
         config = CaptureConfig(sample_rate_hz=250_000)
         stream = SimulatedRadioStream(config)
